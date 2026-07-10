@@ -1,0 +1,221 @@
+/* Container adjustments to match the warm layout in image_93d821.jpg */
+.ledger-container {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 1.5rem;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  color: #2c2520;
+}
+
+/* Header Section */
+.ledger-header {
+  margin-bottom: 1.5rem;
+}
+
+.header-title-flex {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.25rem;
+}
+
+.header-title-flex h1 {
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: #1e1b18;
+}
+
+.ledger-header p {
+  color: #7c7267;
+  font-size: 0.85rem;
+  margin: 0;
+}
+
+/* Redesigned Filters to integrate with the warm cream background */
+.filter-card {
+  background: #ffffff;
+  border: 1px solid #e6dfd5;
+  border-radius: 8px;
+  padding: 1rem 1.25rem;
+  margin-bottom: 1.5rem;
+  box-shadow: 0 1px 2px rgba(44, 37, 32, 0.03);
+}
+
+.filter-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr); /* Fixed 3 columns to match the top row layout */
+  gap: 1.25rem;
+}
+
+.filter-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.filter-group label {
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: #61574d;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.filter-select {
+  width: 100%;
+  padding: 0.5rem 0.75rem;
+  font-size: 0.85rem;
+  border: 1px solid #dcd3c5;
+  border-radius: 6px;
+  background-color: #faf9f6;
+  color: #2c2520;
+  outline: none;
+  transition: all 0.15s ease-in-out;
+}
+
+.filter-select:focus {
+  border-color: #cbbba4;
+  background-color: #ffffff;
+  box-shadow: 0 0 0 3px rgba(203, 187, 164, 0.2);
+}
+
+/* Fluid Table System ensuring 100% webpage horizontal containment */
+.table-container {
+  width: 100%;
+  background: #ffffff;
+  border: 1px solid #e6dfd5;
+  border-radius: 8px;
+  /* Removes hidden overflow scroll clipping issues */
+  overflow-x: auto; 
+  box-shadow: 0 1px 2px rgba(44, 37, 32, 0.03);
+  margin-bottom: 1rem;
+}
+
+.ledger-table {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: left;
+  font-size: 0.82rem; /* Scaled down slightly to guarantee 100% display fitting */
+  table-layout: fixed; /* Mandates column constraints */
+}
+
+/* Explicit width distributions so columns compress predictably */
+.ledger-table th:nth-child(1), .ledger-table td:nth-child(1) { width: 11%; } /* Claim ID */
+.ledger-table th:nth-child(2), .ledger-table td:nth-child(2) { width: 33%; } /* Architect Reference */
+.ledger-table th:nth-child(3), .ledger-table td:nth-child(3) { width: 13%; } /* Lead Reference ID */
+.ledger-table th:nth-child(4), .ledger-table td:nth-child(4) { width: 18%; } /* Product SKU */
+.ledger-table th:nth-child(5), .ledger-table td:nth-child(5) { width: 9%;  text-align: right; } /* Sheets Vol */
+.ledger-table th:nth-child(6), .ledger-table td:nth-child(6) { width: 12%; text-align: center; } /* Claim Date */
+.ledger-table th:nth-child(7), .ledger-table td:nth-child(7) { width: 11%; text-align: center; } /* Pipeline Status */
+
+.ledger-table th {
+  background: #fbf9f6;
+  padding: 0.75rem 0.85rem;
+  font-weight: 600;
+  color: #61574d;
+  border-bottom: 1px solid #e6dfd5;
+  text-transform: uppercase;
+  font-size: 0.75rem;
+  letter-spacing: 0.02em;
+}
+
+.ledger-table td {
+  padding: 0.75rem 0.85rem;
+  border-bottom: 1px solid #f5f2ed;
+  color: #3d342c;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis; /* Gracefully truncates long architect names */
+  vertical-align: middle;
+}
+
+.ledger-table tr:hover td {
+  background-color: #faf9f6;
+}
+
+/* Code elements inside tables */
+.ledger-table code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  background: #f2ede4;
+  padding: 0.15rem 0.35rem;
+  border-radius: 4px;
+  color: #4a3e3d;
+  font-size: 0.78rem;
+}
+
+/* Sleek Status Badges */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.2rem 0.5rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+  border-radius: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+.badge.won { background: #e8f5e9; color: #1b5e20; }
+.badge.hot { background: #ffebee; color: #b71c1c; }
+.badge.warm { background: #fff8e1; color: #f57f17; }
+.badge.cold { background: #e1f5fe; color: #01579b; }
+.badge.unknown { background: #f5f2ed; color: #61574d; }
+
+/* Refined Pagination Systems */
+.pagination-container {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.5rem 0;
+}
+
+.pagination-info {
+  font-size: 0.8rem;
+  color: #7c7267;
+}
+
+.pagination-buttons {
+  display: flex;
+  gap: 0.25rem;
+}
+
+.btn-pagination {
+  padding: 0.35rem 0.65rem;
+  font-size: 0.8rem;
+  font-weight: 500;
+  background: #ffffff;
+  border: 1px solid #dcd3c5;
+  border-radius: 4px;
+  color: #4a3e3b;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.btn-pagination:hover:not(:disabled) {
+  background: #faf9f6;
+  border-color: #cbbba4;
+}
+
+.btn-pagination:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.btn-pagination.active {
+  background: #bfa17a; /* Clean premium metallic accent to fit layout aesthetics */
+  color: #ffffff;
+  border-color: #bfa17a;
+}
+
+.status-message {
+  padding: 4rem;
+  text-align: center;
+  color: #7c7267;
+  font-size: 0.85rem;
+}
+
+.flex-icon-align {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
