@@ -67,7 +67,7 @@ export default function UserManagement() {
     setFetchLoading(true);
     try {
       const { data, error } = await supabase
-        .from('users')
+        .from('users_profile')
         .select('id, auth_user_id, name, username, mobile, role, branch, status, department, designation, email');
 
       if (error) throw error;
@@ -151,7 +151,7 @@ export default function UserManagement() {
     setLoading(true);
     try {
       const { data: existingUser, error: checkError } = await supabase
-        .from('users')
+        .from('users_profile')
         .select('id')
         .eq('email', formData.email.toLowerCase())
         .maybeSingle(); 
@@ -174,7 +174,7 @@ export default function UserManagement() {
       const userId = authData.user.id;
 
       const { error: profileError } = await supabase
-        .from('users')
+        .from('users_profile')
         .insert([
           {
             auth_user_id: userId, 
@@ -209,7 +209,7 @@ export default function UserManagement() {
     setShowUpdateModal(false);
     try {
       const { error } = await supabase
-        .from('users')
+        .from('users_profile')
         .update({
           name: formData.name,
           username: formData.username,

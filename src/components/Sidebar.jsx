@@ -23,7 +23,7 @@ export default function Sidebar() {
         if (!publicUserId) return;
 
         const { data, error } = await supabase
-          .from('users')
+          .from('users_profile')
           .select('id, name, role, username, mobile, branch, status')
           .eq('id', publicUserId)
           .maybeSingle();

@@ -58,7 +58,7 @@ export default function Login() {
       console.log('--- LOGIN DEBUG START ---');
 
      const { data: publicUser, error: publicFetchError } = await supabase
-  .from('users')
+  .from('users_profile')
   .select('id, username, email, auth_user_id, status, role')
 
   .ilike('username', username.trim())

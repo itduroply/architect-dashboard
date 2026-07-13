@@ -99,7 +99,7 @@ export default function UserProfile() {
           if (!publicUserId) return;
 
           const { data, error } = await supabase
-            .from('users')
+            .from('users_profile')
             .select('name, role, username, mobile, branch, status')
             .eq('id', publicUserId)
             .maybeSingle();
