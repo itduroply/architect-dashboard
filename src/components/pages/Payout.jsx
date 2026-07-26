@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { supabase } from '../../lib/supbase'; // Keeping your custom path
+import { supabase } from '../../lib/supbase';
 import { 
   User, 
   AlertCircle, 
@@ -7,14 +7,21 @@ import {
   Plus,
   X,
   CheckCircle,
-  Trash2 
+  Trash2,
+  Calendar,
+  Download,
+  FileSpreadsheet
 } from 'lucide-react';
 
 export default function PayoutRequestsTable() {
   const [payouts, setPayouts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [activeFilter, setActiveFilter] = useState('Pending'); // Filter state tracking: 'Pending' or 'Paid'
+  const [activeFilter, setActiveFilter] = useState('Pending'); 
+  
+  // Date Filtering States for 'Paid' Tab
+  const [dateFilterPreset, setDateFilterPreset] = useState('all'); // 'all', '3months', '6months', '12months', 'custom'
+  const [selectedMonth, setSelectedMonth] = useState(''); 
   
   // Selection States for Batch Actions
   const [selectedIds, setSelectedIds] = useState([]);
@@ -33,65 +40,61 @@ export default function PayoutRequestsTable() {
     remark: ''
   });
 
-  // Custom Popup Modals State (Replacing native browser confirm/alerts)
+  // Custom Popup Modals State
   const [deleteModal, setDeleteModal] = useState({ isOpen: false, targetId: null });
   const [warningModal, setWarningModal] = useState({ isOpen: false, title: '', message: '' });
 
   // Notification State
   const [snackbar, setSnackbar] = useState({ show: false, message: '' });
 
-  // Consolidated function to fetch payouts and cross-reference their remittance status uniquely
+  // Consolidated function to fetch payouts and cross-reference via transaction_id
   const fetchPayoutRequests = async () => {
     try {
       setLoading(true);
-      setSelectedIds([]); // Clear selections on refresh pipeline
+      setSelectedIds([]); 
       
-      // 1. Fetch payout requests including the database status column
+      // 1. Fetch payout requests
       const { data: requestData, error: requestError } = await supabase
         .from('payout_request')
-        .select('id, account_identity, architect_name, payout_amount, created_at, status,mobile_no')
+        .select('id, account_identity, architect_name, payout_amount, created_at, status, mobile_no')
         .order('created_at', { ascending: false });
 
       if (requestError) throw requestError;
 
-      // 2. Fetch corresponding entries from remittances including their auto-generated IDs
+      // 2. Fetch corresponding remittances
       const { data: remittanceData, error: remittanceError } = await supabase
         .from('remittances')
-        .select('id, architect_name, status')
-        .order('id', { ascending: true });
+        .select('id, transaction_id, architect_name, status, done_payment_date, created_payment_date');
 
       if (remittanceError) throw remittanceError;
 
-      // 3. Map rows together safely using a sequential occurrence tracker to isolate duplicates
-      const nameCounts = {};
-      let structuredPayouts = (requestData || []).map(row => {
-        const matchingKey = `${row.account_identity || ''} | ${row.architect_name || ''}`;
-        
-        if (nameCounts[matchingKey] === undefined) {
-          nameCounts[matchingKey] = 0;
-        } else {
-          nameCounts[matchingKey]++;
+      // 3. Create Lookup Map matching remittances.transaction_id to payout_request.id
+      const remittanceMap = new Map();
+      (remittanceData || []).forEach(rem => {
+        if (rem.transaction_id !== null && rem.transaction_id !== undefined) {
+          remittanceMap.set(Number(rem.transaction_id), rem);
         }
-        const occurrenceIndex = nameCounts[matchingKey];
+      });
 
-        const matchingRemittances = (remittanceData || []).filter(
-          rem => rem.architect_name === matchingKey
-        );
+      // 4. Map payout requests using shared transaction_id
+      const structuredPayouts = (requestData || []).map(row => {
+        const linkedRemittance = remittanceMap.get(Number(row.id));
 
-        const linkedRemittance = matchingRemittances[occurrenceIndex];
+        // Status priority check
+        const finalStatus = linkedRemittance 
+          ? (linkedRemittance.status === 'Paid' ? 'Paid' : 'Made') 
+          : (row.status === 'Made' ? 'Made' : 'Queue');
 
-        // Preservation priority check for already processed ledgers
-       // FIX: Prioritize the live status from the remittances table over the static 'Made' status
-let finalStatus = linkedRemittance 
-  ? linkedRemittance.status 
-  : (row.status === 'Made' ? 'Made' : 'Queue');
+        const donePaymentDate = linkedRemittance?.done_payment_date || linkedRemittance?.created_payment_date;
+
         return {
           ...row,
+          done_payment_date: donePaymentDate,
           status: finalStatus
         };
       });
 
-      // Maintain sorting to drop 'Made' items systematically to the bottom
+      // Sort 'Made' items below 'Queue', with 'Paid' available for Paid view
       structuredPayouts.sort((a, b) => {
         if (a.status === 'Made' && b.status !== 'Made') return 1;
         if (a.status !== 'Made' && b.status === 'Made') return -1;
@@ -139,13 +142,152 @@ let finalStatus = linkedRemittance
       style: 'currency',
       currency: 'INR',
       maximumFractionDigits: 0
-    }).format(amount);
+    }).format(amount || 0);
   };
 
+  // Dynamic filter logic supporting presets (3m, 6m, 12m) & custom month
   const filteredPayouts = payouts.filter(row => {
     const isRowPaid = row.status.toLowerCase() === 'paid';
-    return activeFilter === 'Paid' ? isRowPaid : !isRowPaid;
+    const matchesTab = activeFilter === 'Paid' ? isRowPaid : !isRowPaid;
+
+    if (!matchesTab) return false;
+
+    if (activeFilter === 'Paid') {
+      const dateToUse = row.done_payment_date || row.created_at;
+      if (!dateToUse) return false;
+
+      const rowDate = new Date(dateToUse);
+      const now = new Date();
+
+      if (dateFilterPreset === '3months') {
+        const cutoff = new Date();
+        cutoff.setMonth(now.getMonth() - 3);
+        if (rowDate < cutoff) return false;
+      } else if (dateFilterPreset === '6months') {
+        const cutoff = new Date();
+        cutoff.setMonth(now.getMonth() - 6);
+        if (rowDate < cutoff) return false;
+      } else if (dateFilterPreset === '12months') {
+        const cutoff = new Date();
+        cutoff.setMonth(now.getMonth() - 12);
+        if (rowDate < cutoff) return false;
+      } else if (dateFilterPreset === 'custom' && selectedMonth) {
+        const rowMonth = rowDate.toISOString().slice(0, 7);
+        if (rowMonth !== selectedMonth) return false;
+      }
+    }
+
+    return true;
   });
+
+  // KPI Calculations
+  const aggregateTransferred = payouts
+    .filter(p => p.status.toLowerCase() === 'paid')
+    .reduce((sum, item) => sum + (Number(item.payout_amount) || 0), 0);
+
+  const pendingAllocation = payouts
+    .filter(p => p.status.toLowerCase() !== 'paid')
+    .reduce((sum, item) => sum + (Number(item.payout_amount) || 0), 0);
+
+  const filteredTotalAllocation = filteredPayouts.reduce(
+    (sum, item) => sum + (Number(item.payout_amount) || 0), 
+    0
+  );
+
+  // CSV/Excel Export Utility
+  const exportToCSV = (dataList, filename, includeAggregatedSummary = true) => {
+    if (!dataList || dataList.length === 0) {
+      setWarningModal({
+        isOpen: true,
+        title: "Export Empty",
+        message: "No records found matching the selected export criteria."
+      });
+      return;
+    }
+
+    const headers = [
+      "Transaction ID", 
+      "Architect Partner", 
+      "Remittance Destination", 
+      "Amount (INR)", 
+      "Status", 
+      "Payment Date", 
+      "Mobile Number"
+    ];
+
+    const rows = dataList.map(row => [
+      `"${row.id || ''}"`,
+      `"${(row.architect_name || '').replace(/"/g, '""')}"`,
+      `"${(row.account_identity || '').replace(/"/g, '""')}"`,
+      row.payout_amount || 0,
+      `"${row.status || ''}"`,
+      `"${formatDate(row.done_payment_date || row.created_at)}"`,
+      `"${row.mobile_no || ''}"`
+    ]);
+
+    if (includeAggregatedSummary) {
+      const totalAmount = dataList.reduce((sum, item) => sum + (Number(item.payout_amount) || 0), 0);
+      rows.push([]); // Empty row space
+      rows.push([
+        '"SUMMARY"',
+        '"AGGREGATED TRANSFER TOTAL"',
+        '""',
+        totalAmount,
+        '""',
+        '""',
+        '""'
+      ]);
+    }
+
+    const csvContent = "\uFEFF" + [headers.join(","), ...rows.map(e => e.join(","))].join("\n");
+    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.setAttribute("href", url);
+    link.setAttribute("download", `${filename}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  // Handle Export Option Selection from Dropdown
+  const handleExportOptionSelect = (e) => {
+    const selectedOption = e.target.value;
+    if (!selectedOption) return;
+
+    const now = new Date();
+    let exportData = [];
+    let filename = 'payout_ledger';
+
+    if (selectedOption === 'current') {
+      exportData = filteredPayouts;
+      filename = `payouts_${activeFilter.toLowerCase()}_view_${new Date().toISOString().slice(0, 10)}`;
+    } else if (selectedOption === 'last3m') {
+      const cutoff = new Date();
+      cutoff.setMonth(now.getMonth() - 3);
+      exportData = payouts.filter(p => p.status.toLowerCase() === 'paid' && new Date(p.done_payment_date || p.created_at) >= cutoff);
+      filename = `paid_remittances_last_3_months_${new Date().toISOString().slice(0, 10)}`;
+    } else if (selectedOption === 'last6m') {
+      const cutoff = new Date();
+      cutoff.setMonth(now.getMonth() - 6);
+      exportData = payouts.filter(p => p.status.toLowerCase() === 'paid' && new Date(p.done_payment_date || p.created_at) >= cutoff);
+      filename = `paid_remittances_last_6_months_${new Date().toISOString().slice(0, 10)}`;
+    } else if (selectedOption === 'last12m') {
+      const cutoff = new Date();
+      cutoff.setMonth(now.getMonth() - 12);
+      exportData = payouts.filter(p => p.status.toLowerCase() === 'paid' && new Date(p.done_payment_date || p.created_at) >= cutoff);
+      filename = `paid_remittances_last_12_months_${new Date().toISOString().slice(0, 10)}`;
+    } else if (selectedOption === 'all_paid') {
+      exportData = payouts.filter(p => p.status.toLowerCase() === 'paid');
+      filename = `all_paid_remittances_${new Date().toISOString().slice(0, 10)}`;
+    } else if (selectedOption === 'all') {
+      exportData = payouts;
+      filename = `complete_payout_history_${new Date().toISOString().slice(0, 10)}`;
+    }
+
+    exportToCSV(exportData, filename, true);
+    e.target.value = ''; // Reset dropdown after selection
+  };
 
   const handleSelectAllToggle = () => {
     if (selectedIds.length === filteredPayouts.length) {
@@ -162,7 +304,6 @@ let finalStatus = linkedRemittance
   };
 
   const handleOpenLedgerModal = (row) => {
-    // Single click guard fallback check
     if (row.status === 'Made') {
       setWarningModal({
         isOpen: true,
@@ -195,12 +336,11 @@ let finalStatus = linkedRemittance
     const selectedRows = payouts.filter(p => selectedIds.includes(p.id));
     const containsMade = selectedRows.some(row => row.status === 'Made');
     
-    // Strict Guardrail Check: Block right at the bulk generation click event
     if (containsMade) {
       setWarningModal({
         isOpen: true,
         title: "Ledger Group Blocked",
-        message: "One or more of your checked items have already had their ledgers generated. To ensure zero extra funding leakages, double generation is blocked at any cost."
+        message: "One or more of your checked items have already had their ledgers generated."
       });
       return;
     }
@@ -212,7 +352,7 @@ let finalStatus = linkedRemittance
     const dd = String(today.getDate()).padStart(2, '0');
     const formattedCurrentDate = `${yyyy}-${mm}-${dd}`;
 
-    const cumulativeSum = selectedRows.reduce((sum, item) => sum + (item.payout_amount || 0), 0);
+    const cumulativeSum = selectedRows.reduce((sum, item) => sum + (Number(item.payout_amount) || 0), 0);
     setFormData({
       id: 'BULK_SELECTION',
       architect: `Multiple Records (${selectedIds.length} Rows Highlighted)`,
@@ -228,7 +368,6 @@ let finalStatus = linkedRemittance
   const handleCreateLedgerSubmit = async (e) => {
     e.preventDefault();
     
-    // Absolute Final Pre-Flight Validation Check Layer
     if (isBulkMode) {
       const selectedRows = payouts.filter(p => selectedIds.includes(p.id));
       if (selectedRows.some(row => row.status === 'Made')) {
@@ -236,7 +375,7 @@ let finalStatus = linkedRemittance
         setWarningModal({
           isOpen: true,
           title: "Critical Security Refusal",
-          message: "Transaction Aborted! Duplicate ledger generation detected for processed rows at the execution millisecond. No extra money will be allocated."
+          message: "Transaction Aborted! Duplicate ledger generation detected for processed rows."
         });
         return;
       }
@@ -247,7 +386,7 @@ let finalStatus = linkedRemittance
         setWarningModal({
           isOpen: true,
           title: "Transaction Refused",
-          message: "This payout item is already linked to an existing ledger profile. Action stopped permanently."
+          message: "This payout item is already linked to an existing ledger profile."
         });
         return;
       }
@@ -261,6 +400,7 @@ let finalStatus = linkedRemittance
       if (isBulkMode) {
         const selectedRows = payouts.filter(p => selectedIds.includes(p.id));
         recordsToInsert = selectedRows.map(row => ({
+          transaction_id: row.id,
           architect_name: `${row.account_identity || ''} | ${row.architect_name || ''}`,
           account_number: row.account_identity,
           amount: Number(row.payout_amount),
@@ -273,6 +413,7 @@ let finalStatus = linkedRemittance
       } else {
         recordsToInsert = [
           {
+            transaction_id: formData.id,
             architect_name: formData.architect,
             account_number: formData.accountIdentity,
             amount: Number(formData.amount),
@@ -285,13 +426,11 @@ let finalStatus = linkedRemittance
         idsToUpdate = [formData.id];
       }
 
-      // 1. Insert into remittances table
       const { error: remittanceError } = await supabase
         .from('remittances')
         .insert(recordsToInsert);
       if (remittanceError) throw remittanceError;
 
-      // 2. Update status to 'Made'
       const { error: updateError } = await supabase
         .from('payout_request')
         .update({ status: 'Made' })
@@ -302,7 +441,7 @@ let finalStatus = linkedRemittance
       setSnackbar({ 
         show: true, 
         message: isBulkMode 
-          ? `Successfully generated ledger records and updated status for ${selectedIds.length} items!` 
+          ? `Successfully generated ledger records for ${selectedIds.length} items!` 
           : 'Ledger creation completed and status updated to Made!' 
       });
       setSelectedIds([]);
@@ -322,12 +461,10 @@ let finalStatus = linkedRemittance
     }
   };
 
-  // Trigger custom confirmation react pop-up modal setup
   const triggerDeletePayout = (id) => {
     setDeleteModal({ isOpen: true, targetId: id });
   };
 
-  // Realize execution pipeline safely post-modal validation
   const handleConfirmDeletePayout = async () => {
     const id = deleteModal.targetId;
     setDeleteModal({ isOpen: false, targetId: null });
@@ -358,8 +495,6 @@ let finalStatus = linkedRemittance
       setLoading(false);
     }
   };
-
-  const totalVolume = payouts.reduce((sum, item) => sum + (item.payout_amount || 0), 0);
 
   return (
     <div className="centered-ledger-wrapper">
@@ -423,8 +558,15 @@ let finalStatus = linkedRemittance
           align-items: center;
           margin-bottom: 1.5rem;
           border-bottom: 2px solid #eaddcc;
-          padding-bottom: 0.4rem;
+          padding-bottom: 0.6rem;
           gap: 1rem;
+          flex-wrap: wrap;
+        }
+        .controls-left-group {
+          display: flex;
+          align-items: center;
+          gap: 1rem;
+          flex-wrap: wrap;
         }
         .filter-tabs-container {
           display: flex;
@@ -449,10 +591,69 @@ let finalStatus = linkedRemittance
           background: #8a683e;
           color: #ffffff;
         }
-        .btn-bulk-execute {
+        .date-filter-group {
+          display: flex;
+          align-items: center;
+          gap: 0.5rem;
+          background: #fdfaf5;
+          padding: 0.35rem 0.75rem;
+          border-radius: 8px;
+          border: 1px solid #eaddcc;
+        }
+        .filter-select-element {
+          border: 1px solid #eaddcc;
+          border-radius: 6px;
+          padding: 0.3rem 0.6rem;
+          font-size: 0.8rem;
+          font-weight: 600;
+          color: #2a1a0f;
+          outline: none;
+          background: #ffffff;
+          cursor: pointer;
+          font-family: inherit;
+        }
+        .month-input-element {
+          border: 1px solid #eaddcc;
+          border-radius: 6px;
+          padding: 0.25rem 0.5rem;
+          font-size: 0.8rem;
+          color: #2a1a0f;
+          outline: none;
+          background: #ffffff;
+          font-family: inherit;
+        }
+        .excel-dropdown-wrapper {
+          position: relative;
+          display: flex;
+          align-items: center;
+          background: #2a1a0f;
+          border-radius: 6px;
+          padding: 0 0.5rem;
+        }
+        .excel-dropdown-wrapper select {
           background: #2a1a0f;
           color: #fdfaf5;
-          border: 1px solid #2a1a0f;
+          border: none;
+          padding: 0.5rem 0.75rem;
+          font-size: 0.8rem;
+          font-weight: 700;
+          cursor: pointer;
+          outline: none;
+          font-family: inherit;
+          appearance: none;
+          -webkit-appearance: none;
+          padding-right: 1.8rem;
+        }
+        .excel-dropdown-icon {
+          position: absolute;
+          right: 0.6rem;
+          pointer-events: none;
+          color: #fdfaf5;
+        }
+        .btn-bulk-execute {
+          background: #8a683e;
+          color: #ffffff;
+          border: 1px solid #735430;
           padding: 0.5rem 1.1rem;
           font-size: 0.8rem;
           font-weight: 700;
@@ -462,16 +663,10 @@ let finalStatus = linkedRemittance
           align-items: center;
           gap: 0.5rem;
           transition: all 0.2s ease-in-out;
-          animation: slideInFast 0.2s ease-out;
         }
         .btn-bulk-execute:hover {
-          background: #4a311d;
-          border-color: #4a311d;
+          background: #735430;
           box-shadow: 0 4px 12px rgba(42, 26, 15, 0.15);
-        }
-        @keyframes slideInFast {
-          from { transform: translateY(5px); opacity: 0; }
-          to { transform: translateY(0); opacity: 1; }
         }
         .quick-metrics {
           display: flex;
@@ -601,14 +796,10 @@ let finalStatus = linkedRemittance
           background: #8a683e;
           color: #ffffff;
           border-color: #8a683e;
-          box-shadow: 0 2px 8px rgba(138, 104, 62, 0.15);
         }
         .popup-modal-overlay {
           position: fixed;
-          top: 0;
-          left: 0;
-          right: 0;
-          bottom: 0;
+          top: 0; left: 0; right: 0; bottom: 0;
           background: rgba(42, 26, 15, 0.45);
           backdrop-filter: blur(4px);
           display: flex;
@@ -626,19 +817,10 @@ let finalStatus = linkedRemittance
           max-height: 90vh;
           overflow-y: auto;
           box-shadow: 0 12px 36px rgba(58, 35, 18, 0.16);
-          animation: scaleReveal 0.2s ease-out;
-        }
-        @keyframes scaleReveal {
-          from { transform: scale(0.96); opacity: 0; }
-          to { transform: scale(1); opacity: 1; }
         }
         .modal-header-section {
-          position: sticky;
-          top: 0;
-          z-index: 10;
-          display: flex;
-          justify-content: space-between;
-          align-items: center;
+          position: sticky; top: 0; z-index: 10;
+          display: flex; justify-content: space-between; align-items: center;
           padding: 1rem 1.25rem;
           background: #f3f0ed;
           border-bottom: 1px solid #eaddcc;
@@ -650,190 +832,29 @@ let finalStatus = linkedRemittance
           margin: 0;
         }
         .modal-close-icon {
-          background: none;
-          border: none;
-          color: #8c7662;
-          cursor: pointer;
-          padding: 0.25rem;
-          display: flex;
-          border-radius: 4px;
-          transition: all 0.2s;
+          background: none; border: none; color: #8c7662; cursor: pointer; padding: 0.25rem; display: flex; border-radius: 4px;
         }
-        .modal-close-icon:hover {
-          background: #eaddcc;
-          color: #2a1a0f;
-        }
-        .modal-body-form {
-          padding: 1.25rem;
-        }
-        .modal-grid-form {
-          display: flex;
-          flex-direction: column;
-          gap: 0.9rem;
-        }
-        .input-block {
-          display: flex;
-          flex-direction: column;
-          gap: 0.25rem;
-        }
-        .input-block label {
-          font-size: 0.72rem;
-          font-weight: 700;
-          color: #8c7662;
-          text-transform: uppercase;
-          letter-spacing: 0.04em;
-        }
-        .input-field-element {
-          padding: 0.55rem 0.75rem;
-          border: 1px solid #eaddcc;
-          border-radius: 6px;
-          background: #ffffff;
-          color: #2a1a0f;
-          font-size: 0.85rem;
-          font-family: inherit;
-          transition: border-color 0.2s;
-          box-sizing: border-box;
-          width: 100%;
-          cursor: text;
-        }
-        .input-field-element:focus {
-          outline: none;
-          border-color: #8a683e;
-          box-shadow: 0 0 0 3px rgba(138, 104, 62, 0.08);
-        }
-        .input-field-element:read-only {
-          background: #f5f1ec;
-          color: #7a6552;
-          cursor: not-allowed;
-          border-color: #e3d3c1;
-        }
-        .form-footer-actions {
-          display: flex;
-          justify-content: flex-end;
-          gap: 0.75rem;
-          margin-top: 0.4rem;
-          padding-top: 0.5rem;
-        }
-        .action-button {
-          padding: 0.55rem 1.15rem;
-          border-radius: 6px;
-          font-size: 0.85rem;
-          font-weight: 600;
-          cursor: pointer;
-          transition: all 0.2s;
-        }
-        .action-button-cancel {
-          background: #f3f0ed;
-          border: 1px solid #eaddcc;
-          color: #5c4632;
-        }
-        .action-button-cancel:hover {
-          background: #eaddcc;
-        }
-        .action-button-save {
-          background: #8a683e;
-          border: 1px solid #735430;
-          color: #ffffff;
-          display: inline-flex;
-          align-items: center;
-          gap: 0.5rem;
-        }
-        .action-button-save:hover {
-          background: #735430;
-        }
-        .action-button-save:disabled {
-          background: #c2b4a6;
-          border-color: #c2b4a6;
-          cursor: not-allowed;
-        }
-        .toast-snackbar {
-          position: fixed;
-          bottom: 2rem;
-          right: 2rem;
-          background: #2a1a0f;
-          color: #fdfaf5;
-          padding: 0.85rem 1.35rem;
-          border-radius: 8px;
-          box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
-          display: flex;
-          align-items: center;
-          gap: 0.75rem;
-          font-size: 0.875rem;
-          font-weight: 500;
-          z-index: 1100;
-          animation: slideFromBottom 0.3s cubic-bezier(0.16, 1, 0.3, 1);
-        }
-        @keyframes slideFromBottom {
-          from { transform: translateY(1.5rem); opacity: 0; }
-          to { transform: translateY(0); opacity: 1; }
-        }
-        .status-center {
-          padding: 5rem 2rem;
-          text-align: center;
-          color: #8c7662;
-        }
-        .error-toast {
-          border: 1px solid #fecaca;
-          background: #fef2f2;
-          color: #dc2626;
-          padding: 1rem;
-          border-radius: 8px;
-          margin-bottom: 1.5rem;
-          display: flex;
-          align-items: center;
-          gap: 0.75rem;
-          font-size: 0.875rem;
-        }
-        .spin-icon {
-          animation: rotateLoop 1s linear infinite;
-        }
-        @keyframes rotateLoop {
-          from { transform: rotate(0deg); }
-          to { transform: rotate(360deg); }
-        }
-        @media (max-width: 768px) {
-          .table-controls-bar { flex-direction: column; align-items: flex-start; }
-          .ledger-header { flex-direction: column; align-items: flex-start; gap: 1rem; }
-          .quick-metrics { gap: 1.5rem; flex-direction: column; }
-        }
-        .btn-delete-trigger {
-          background: none;
-          border: none;
-          color: #dc2626;
-          padding: 0.45rem;
-          border-radius: 6px;
-          cursor: pointer;
-          display: inline-flex;
-          align-items: center;
-          justify-content: center;
-          transition: all 0.2s ease-in-out;
-        }
-        .btn-delete-trigger:hover {
-          background: #fef2f2;
-          color: #991b1b;
-        }
-        .actions-cell-wrapper {
-          display: inline-flex;
-          align-items: center;
-          gap: 0.75rem;
-          justify-content: flex-end;
-        }
-        .modal-warning-header {
-          background: #fef2f2 !important;
-          border-bottom: 1px solid #fee2e2 !important;
-        }
-        .modal-warning-title {
-          color: #991b1b !important;
-        }
-        .btn-action-danger {
-          background: #dc2626 !important;
-          border: 1px solid #dc2626 !important;
-          color: #ffffff !important;
-        }
-        .btn-action-danger:hover {
-          background: #991b1b !important;
-          border-color: #991b1b !important;
-        }
+        .modal-body-form { padding: 1.25rem; }
+        .modal-grid-form { display: flex; flex-direction: column; gap: 0.9rem; }
+        .input-block { display: flex; flex-direction: column; gap: 0.25rem; }
+        .input-block label { font-size: 0.72rem; font-weight: 700; color: #8c7662; text-transform: uppercase; letter-spacing: 0.04em; }
+        .input-field-element { padding: 0.55rem 0.75rem; border: 1px solid #eaddcc; border-radius: 6px; background: #ffffff; color: #2a1a0f; font-size: 0.85rem; font-family: inherit; width: 100%; box-sizing: border-box; }
+        .input-field-element:read-only { background: #f5f1ec; color: #7a6552; cursor: not-allowed; border-color: #e3d3c1; }
+        .form-footer-actions { display: flex; justify-content: flex-end; gap: 0.75rem; margin-top: 0.4rem; padding-top: 0.5rem; }
+        .action-button { padding: 0.55rem 1.15rem; border-radius: 6px; font-size: 0.85rem; font-weight: 600; cursor: pointer; }
+        .action-button-cancel { background: #f3f0ed; border: 1px solid #eaddcc; color: #5c4632; }
+        .action-button-save { background: #8a683e; border: 1px solid #735430; color: #ffffff; display: inline-flex; align-items: center; gap: 0.5rem; }
+        .toast-snackbar { position: fixed; bottom: 2rem; right: 2rem; background: #2a1a0f; color: #fdfaf5; padding: 0.85rem 1.35rem; border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,0.18); display: flex; align-items: center; gap: 0.75rem; font-size: 0.875rem; font-weight: 500; z-index: 1100; }
+        .status-center { padding: 5rem 2rem; text-align: center; color: #8c7662; }
+        .error-toast { border: 1px solid #fecaca; background: #fef2f2; color: #dc2626; padding: 1rem; border-radius: 8px; margin-bottom: 1.5rem; display: flex; align-items: center; gap: 0.75rem; font-size: 0.875rem; }
+        .spin-icon { animation: rotateLoop 1s linear infinite; }
+        @keyframes rotateLoop { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+        .btn-delete-trigger { background: none; border: none; color: #dc2626; padding: 0.45rem; border-radius: 6px; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }
+        .btn-delete-trigger:hover { background: #fef2f2; color: #991b1b; }
+        .actions-cell-wrapper { display: inline-flex; align-items: center; gap: 0.75rem; justify-content: flex-end; }
+        .modal-warning-header { background: #fef2f2 !important; border-bottom: 1px solid #fee2e2 !important; }
+        .modal-warning-title { color: #991b1b !important; }
+        .btn-action-danger { background: #dc2626 !important; border: 1px solid #dc2626 !important; color: #ffffff !important; }
       `}</style>
 
       <div className="ledger-content-box">
@@ -856,39 +877,105 @@ let finalStatus = linkedRemittance
 
         {!loading && !error && (
           <section className="quick-metrics">
+            {activeFilter !== 'Paid' && (
+              <div className="metric-tile">
+                <p className="metric-title">Aggregate Transferred</p>
+                <h3 className="metric-stat" style={{ color: '#059669' }}>
+                  {formatAmount(aggregateTransferred)}
+                </h3>
+              </div>
+            )}
+
             <div className="metric-tile">
-              <p className="metric-title">Aggregate Transferred</p>
-              <h3 className="metric-stat">{formatAmount(totalVolume)}</h3>
+              <p className="metric-title">
+                {activeFilter === 'Paid' 
+                  ? (dateFilterPreset !== 'all' ? `Total Paid (${dateFilterPreset.replace('months', ' Months')})` : 'Total Paid Allocation') 
+                  : 'Total Pending Allocation'}
+              </p>
+              <h3 className="metric-stat" style={{ color: activeFilter === 'Paid' ? '#059669' : '#2a1a0f' }}>
+                {formatAmount(activeFilter === 'Paid' ? filteredTotalAllocation : pendingAllocation)}
+              </h3>
             </div>
+
             <div className="metric-tile">
-              <p className="metric-title">Payout Requests</p>
-              <h3 className="metric-stat">{payouts.length}</h3>
+              <p className="metric-title">
+                {activeFilter === 'Paid' ? 'Paid Remittances' : 'Pending Requests'}
+              </p>
+              <h3 className="metric-stat">{filteredPayouts.length}</h3>
             </div>
           </section>
         )}
 
         {!loading && !error && (
           <div className="table-controls-bar">
-            <div className="filter-tabs-container">
-              <button 
-                className={`filter-tab-btn ${activeFilter === 'Pending' ? 'active' : ''}`} 
-                onClick={() => setActiveFilter('Pending')}
-              >
-                Pending Settlements
-              </button>
-              <button 
-                className={`filter-tab-btn ${activeFilter === 'Paid' ? 'active' : ''}`} 
-                onClick={() => setActiveFilter('Paid')}
-              >
-                Paid Remittances
-              </button>
+            <div className="controls-left-group">
+              <div className="filter-tabs-container">
+                <button 
+                  className={`filter-tab-btn ${activeFilter === 'Pending' ? 'active' : ''}`} 
+                  onClick={() => setActiveFilter('Pending')}
+                >
+                  Pending Settlements
+                </button>
+                <button 
+                  className={`filter-tab-btn ${activeFilter === 'Paid' ? 'active' : ''}`} 
+                  onClick={() => setActiveFilter('Paid')}
+                >
+                  Paid Remittances
+                </button>
+              </div>
+
+              {/* Date Filter Controls in Paid Tab */}
+              {activeFilter === 'Paid' && (
+                <div className="date-filter-group">
+                  <Calendar size={15} style={{ color: '#8a683e' }} />
+                  <span style={{ fontSize: '0.78rem', fontWeight: 700, color: '#8c7662', textTransform: 'uppercase' }}>Period:</span>
+                  <select 
+                    value={dateFilterPreset} 
+                    onChange={(e) => setDateFilterPreset(e.target.value)}
+                    className="filter-select-element"
+                  >
+                    <option value="all">All Time</option>
+                    <option value="3months">Last 3 Months</option>
+                    <option value="6months">Last 6 Months</option>
+                    <option value="12months">Last 12 Months</option>
+                    <option value="custom">Specific Month</option>
+                  </select>
+
+                  {dateFilterPreset === 'custom' && (
+                    <input 
+                      type="month" 
+                      value={selectedMonth} 
+                      onChange={(e) => setSelectedMonth(e.target.value)}
+                      className="month-input-element"
+                    />
+                  )}
+                </div>
+              )}
             </div>
-            {activeFilter === 'Pending' && selectedIds.length > 0 && (
-              <button className="btn-bulk-execute" onClick={handleOpenBulkLedgerModal}>
-                <Plus size={14} />
-                Bulk Create Ledger ({selectedIds.length} Items Selected)
-              </button>
-            )}
+
+            <div className="controls-right-group" style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+              {/* Unified Excel Export Dropdown */}
+              <div className="excel-dropdown-wrapper">
+                <FileSpreadsheet size={15} style={{ color: '#fdfaf5', marginLeft: '0.2rem' }} />
+                <select onChange={handleExportOptionSelect} defaultValue="">
+                  <option value="" disabled>Export to Excel...</option>
+                  <option value="current">Current Filtered View</option>
+                  <option value="last3m">Last 3 Months Paid</option>
+                  <option value="last6m">Last 6 Months Paid</option>
+                  <option value="last12m">Last 12 Months Paid</option>
+                  <option value="all_paid">Download All Paid Remittances</option>
+                  <option value="all">Download All Records (Pending & Paid)</option>
+                </select>
+                <Download size={13} className="excel-dropdown-icon" />
+              </div>
+
+              {activeFilter === 'Pending' && selectedIds.length > 0 && (
+                <button className="btn-bulk-execute" onClick={handleOpenBulkLedgerModal}>
+                  <Plus size={14} />
+                  Bulk Create Ledger ({selectedIds.length} Selected)
+                </button>
+              )}
+            </div>
           </div>
         )}
 
@@ -914,86 +1001,98 @@ let finalStatus = linkedRemittance
                   )}
                   <th style={{ width: '22%' }}>Architect Partner</th>
                   <th style={{ width: '22%' }}>Remittance Destination</th>
-                  <th style={{ width: '15%' }}>Allocation</th>
-                  <th style={{ width: '15%' }}>Payout Request Date</th>
+                  <th style={{ width: '15%' }}>
+                    {activeFilter === 'Paid' ? 'Transferred Amount' : 'Allocation'}
+                  </th>
+                  <th style={{ width: '15%' }}>
+                    {activeFilter === 'Paid' ? 'Payment Done Date' : 'Payout Request Date'}
+                  </th>
                   <th style={{ width: '11%' }}>Status</th>
-                    <th style={{ width: '11%' }}>Mobile Number</th>
+                  <th style={{ width: '11%' }}>Mobile Number</th>
                   <th style={{ width: '11%', textAlign: 'right' }}>Actions</th>
                 </tr>
               </thead>
               <tbody>
                 {filteredPayouts.length === 0 ? (
                   <tr>
-                    <td colSpan={activeFilter === 'Pending' ? 7 : 6} className="status-center">
+                    <td colSpan={activeFilter === 'Pending' ? 8 : 7} className="status-center">
                       No matching {activeFilter.toLowerCase()} settlement records found in the ledger system.
                     </td>
                   </tr>
                 ) : (
-                  filteredPayouts.map((row, index) => (
-                    <tr key={row.id || index}>
-                      {activeFilter === 'Pending' && (
-                        <td style={{ textAlign: 'center' }}>
-                          <input 
-                            type="checkbox" 
-                            className="ledger-checkbox-input" 
-                            checked={selectedIds.includes(row.id)} 
-                            onChange={() => handleRowSelectToggle(row.id)} 
-                          />
+                  filteredPayouts.map((row, index) => {
+                    const displayDate = activeFilter === 'Paid' 
+                      ? (row.done_payment_date || row.created_at) 
+                      : row.created_at;
+
+                    return (
+                      <tr key={row.id || index}>
+                        {activeFilter === 'Pending' && (
+                          <td style={{ textAlign: 'center' }}>
+                            <input 
+                              type="checkbox" 
+                              className="ledger-checkbox-input" 
+                              checked={selectedIds.includes(row.id)} 
+                              onChange={() => handleRowSelectToggle(row.id)} 
+                            />
+                          </td>
+                        )}
+                        <td>
+                          <div className="architect-profile">
+                            <User size={15} style={{ opacity: 0.5, color: '#8c7662' }} />
+                            <span>{row.architect_name || 'System Unassigned'}</span>
+                          </div>
                         </td>
-                      )}
-                      <td>
-                        <div className="architect-profile">
-                          <User size={15} style={{ opacity: 0.5, color: '#8c7662' }} />
-                          <span>{row.architect_name || 'System Unassigned'}</span>
-                        </div>
-                      </td>
-                      <td>
-                        <span className="identity-badge">{row.account_identity}</span>
-                      </td>
-                      <td>
-                        <span className="amount-display">{formatAmount(row.payout_amount)}</span>
-                      </td>
-                      
-                     
-                      <td>
-                        <div className="timestamp-group">
-                          <span>{formatDate(row.created_at)}</span>
-                          <span className="timestamp-time">{formatTime(row.created_at)}</span>
-                        </div>
-                      </td>
-                      <td>
-                        <span className={`status-badge-chip ${row.status.toLowerCase() === 'paid' ? 'paid' : 'pending'}`}>
-                          {row.status}
-                        </span>
-                      </td>
-                       <td>
-                        <span className="mobile-number">{row.mobile_no || 'N/A'}</span>
-                      </td>
-                      <td style={{ textAlign: 'right' }}>
-                        <div className="actions-cell-wrapper">
-                          {activeFilter === 'Pending' && (
-                            row.status === 'Made' ? (
-                              <span style={{ fontSize: '0.8rem', color: '#8c7662', fontWeight: 600 }}>
-                                Ledger Generated
-                              </span>
-                            ) : (
-                              <button className="btn-action-trigger" onClick={() => handleOpenLedgerModal(row)}>
-                                <Plus size={14} />
-                                Create Ledger
-                              </button>
-                            )
-                          )}
-                          <button 
-                            className="btn-delete-trigger"
-                            onClick={() => triggerDeletePayout(row.id)}
-                            title="Delete Record"
-                          >
-                            <Trash2 size={15} />
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  ))
+                        <td>
+                          <span className="identity-badge">{row.account_identity}</span>
+                        </td>
+                        <td>
+                          <span className="amount-display" style={{ color: activeFilter === 'Paid' ? '#059669' : '#2a1a0f' }}>
+                            {formatAmount(row.payout_amount)}
+                          </span>
+                        </td>
+                        <td>
+                          <div className="timestamp-group">
+                            <span>{formatDate(displayDate)}</span>
+                            {activeFilter !== 'Paid' && (
+                              <span className="timestamp-time">{formatTime(displayDate)}</span>
+                            )}
+                          </div>
+                        </td>
+                        <td>
+                          <span className={`status-badge-chip ${row.status.toLowerCase() === 'paid' ? 'paid' : 'pending'}`}>
+                            {row.status}
+                          </span>
+                        </td>
+                        <td>
+                          <span className="mobile-number">{row.mobile_no || 'N/A'}</span>
+                        </td>
+                        <td style={{ textAlign: 'right' }}>
+                          <div className="actions-cell-wrapper">
+                            {activeFilter === 'Pending' && (
+                              row.status === 'Made' ? (
+                                <span style={{ fontSize: '0.8rem', color: '#8c7662', fontWeight: 600 }}>
+                                  Ledger Generated
+                                </span>
+                              ) : (
+                                <button className="btn-action-trigger" onClick={() => handleOpenLedgerModal(row)}>
+                                  <Plus size={14} />
+                                  Create Ledger
+                                </button>
+                              )
+                            )}
+                            <button 
+                              className="btn-delete-trigger"
+                              onClick={() => triggerDeletePayout(row.id)}
+                              title="Delete Record"
+                            >
+                              <Trash2 size={15} />
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })
                 )}
               </tbody>
             </table>
@@ -1001,7 +1100,7 @@ let finalStatus = linkedRemittance
         )}
       </div>
 
-      {/* ================= PRIMARY TRANS-LOG LEDGER FORM MODAL ================= */}
+      {/* Single / Bulk Ledger Creation Modal */}
       {isModalOpen && (
         <div className="popup-modal-overlay">
           <div className="popup-modal-box">
@@ -1040,7 +1139,7 @@ let finalStatus = linkedRemittance
                 </div>
                 <div className="input-block">
                   <label>Internal Audit Remarks / Logs</label>
-                  <textarea rows="2" className="input-field-element" style={{ resize: 'vertical' }} value={formData.remark} onChange={(e) => setFormData({ ...formData, remark: e.target.value })} placeholder={isBulkMode ? "Enter global transaction logs remark for all entries..." : "Enter transaction logs remark info..."} />
+                  <textarea rows="2" className="input-field-element" style={{ resize: 'vertical' }} value={formData.remark} onChange={(e) => setFormData({ ...formData, remark: e.target.value })} placeholder="Enter transaction logs remark info..." />
                 </div>
                 <div className="form-footer-actions">
                   <button type="button" className="action-button action-button-cancel" onClick={() => setIsModalOpen(false)}>Cancel</button>
@@ -1054,7 +1153,7 @@ let finalStatus = linkedRemittance
         </div>
       )}
 
-      {/* ================= REACT POPUP MODAL: BEAUTIFUL DELETE CONFIRMATION ================= */}
+      {/* Delete Confirmation Modal */}
       {deleteModal.isOpen && (
         <div className="popup-modal-overlay">
           <div className="popup-modal-box" style={{ maxWidth: '440px' }}>
@@ -1068,7 +1167,7 @@ let finalStatus = linkedRemittance
             </div>
             <div className="modal-body-form" style={{ padding: '1.5rem' }}>
               <p style={{ margin: '0 0 1.5rem 0', color: '#4a311d', fontSize: '0.9rem', lineHeight: '1.5' }}>
-                Are you absolutely sure you want to permanently delete this payout request record from the database? This action cannot be undone.
+                Are you absolutely sure you want to permanently delete this payout request record from the database?
               </p>
               <div className="form-footer-actions" style={{ margin: 0, paddingTop: 0 }}>
                 <button type="button" className="action-button action-button-cancel" onClick={() => setDeleteModal({ isOpen: false, targetId: null })}>Cancel</button>
@@ -1079,7 +1178,7 @@ let finalStatus = linkedRemittance
         </div>
       )}
 
-      {/* ================= REACT POPUP MODAL: ABSOLUTE DOUBLE-SPEND PREVENT WARNING ================= */}
+      {/* Warning Modal */}
       {warningModal.isOpen && (
         <div className="popup-modal-overlay">
           <div className="popup-modal-box" style={{ maxWidth: '460px' }}>
@@ -1110,7 +1209,7 @@ let finalStatus = linkedRemittance
         </div>
       )}
 
-      {/* Global Toast Snackbar Feedback Notification */}
+      {/* Global Snackbar */}
       {snackbar.show && (
         <div className="toast-snackbar">
           <CheckCircle size={18} style={{ color: '#34d399' }} />

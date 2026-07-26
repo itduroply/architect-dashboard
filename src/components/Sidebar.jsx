@@ -66,6 +66,8 @@ export default function Sidebar() {
     if (p.includes('/profile')) return 'profile';
     if (p.includes('/full')) return 'full';
     if (p.includes('/query')) return 'query';
+    if (p.includes('/peligible')) return 'peligible'; // Added for ProductEligibilityPage
+    if(p.includes('/ventura')) return 'ventura';
     return 'dashboard';
   }, [location.pathname]);
 
@@ -83,7 +85,9 @@ export default function Sidebar() {
       payout: '/app/payout',
       commission:'/app/commission',
       full: '/app/full',
-      query: '/app/query'
+      query: '/app/query',
+      peligible: '/app/peligible', // Added for ProductEligibilityPage
+      ventura:'/app/ventura'
     };
 
     const path = map[viewId] || '/app/dashboard';
@@ -200,6 +204,37 @@ export default function Sidebar() {
                 onClick={() => handleNavigation('query')}
               >
                 <span className="sb-icon">❓</span> Get Query
+              </div>
+            )}
+             
+          </>
+        )}
+         {(isAdmin || isManager) && (
+          <>
+            <div className="sb-section" id="sb-sec-admin">Product Eligiblity Section</div>
+            {isAdmin && (
+              <div 
+                className={getNavItemClass('peligible')} 
+                id="nav-peligible" 
+                onClick={() => handleNavigation('peligible')}
+              >
+                <span className="sb-icon">📋</span> Product Eligibility
+              </div>
+            )}
+             
+          </>
+        )}
+
+          {(isAdmin || isManager) && (
+          <>
+            <div className="sb-section" id="sb-sec-admin">Ventura Information Section</div>
+            {isAdmin && (
+              <div 
+                className={getNavItemClass('ventura')} 
+                id="nav-peligible" 
+                onClick={() => handleNavigation('ventura')}
+              >
+                <span className="sb-icon">📈</span> Ventura Data
               </div>
             )}
              

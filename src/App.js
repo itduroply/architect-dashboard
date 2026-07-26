@@ -1,10 +1,10 @@
 import React, { useEffect, useState } from 'react';
 import { BrowserRouter, Routes, Route, Navigate, Outlet } from 'react-router-dom';
 import { supabase } from './lib/supbase'; // Ensure this points to your actual supabase client path
-
+import Ventura from './components/pages/VenturaInformation';
 import Login from './components/Login';
 import './components/Global.css';
-
+import ProductEligibility from './components/pages/ProductEligible'; // Import the ProductEligibilityPage component
 import Dashboard from './components/pages/Dashboard';
 import Topbar from './components/Topbar';
 import Query from './components/pages/Query';
@@ -104,6 +104,8 @@ export default function App() {
           <Route path="commission" element={<CommissionLedger />} />
           <Route path="full" element={<Full />} />
           <Route path="query" element={<Query />} />
+          <Route path="peligible" element={<ProductEligibility />} /> {/* Add the ProductEligibilityPage route */}
+          <Route path="ventura" element={<Ventura/>}/>
           {/* Fallback internal index redirection */}
           <Route index element={<Navigate to="dashboard" replace />} />
         </Route>
