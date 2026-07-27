@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useLocation } from 'react-router-dom';
 import { supabase } from '../../lib/supbase'; 
 
@@ -6,14 +6,13 @@ const ArchitectAccounts = () => {
   const location = useLocation();
 
   // Filters state management
-// Filters state management
   const [filters, setFilters] = useState({
     search: '',
     tier: '', 
     eligibility: '',
     status: '',
     pencilOnly: false,
-    state: '', // <-- Add this line
+    state: '',
   });
 
   // Operational state flags
@@ -44,8 +43,24 @@ const ArchitectAccounts = () => {
     transferQty: '',
   });
 
+  // Searchable Dropdown State for Target SKU
+  const [targetSkuSearch, setTargetSkuSearch] = useState('');
+  const [targetDropdownOpen, setTargetDropdownOpen] = useState(false);
+  const dropdownRef = useRef(null);
+
   // Floating Notification Snackbar State
   const [toast, setToast] = useState({ show: false, message: '', type: 'info' });
+
+  // Close dropdown on click outside
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target)) {
+        setTargetDropdownOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
 
   // Helper utility to fire notifications
   const showToast = (message, type = 'info', autoDismiss = true) => {
@@ -57,22 +72,20 @@ const ArchitectAccounts = () => {
     }
   };
 
-  // Local eligibility memory cache - bound to Unique Architect ID Strings
+  // Local eligibility memory cache
   const [eligibilityMap, setEligibilityMap] = useState(() => {
     const saved = localStorage.getItem('architect_eligibility_registry_v2');
     return saved ? JSON.parse(saved) : {};
   });
 
- 
-
-  // Helper utility to safely parse out the unique ID code from full name strings
+  // Helper utility to safely parse out unique ID
   const extractArchitectId = (fullName) => {
     if (!fullName) return 'UNKNOWN';
     const str = String(fullName);
     return str.includes('|') ? str.split('|')[0].trim() : str.trim();
   };
 
-  // ─── 📝 Simplified Telemetry Logging Engine ───
+  // Telemetry Logging Engine
   const logTelemetry = async (actionType, description) => {
     try {
       const activeId = localStorage.getItem('auth_uid');
@@ -90,7 +103,7 @@ const ArchitectAccounts = () => {
     }
   };
 
-  // ─── 👤 EXACT MATCH LOGIN DETECTION ───
+  // Login Operator Detection
   const resolveOperatorName = async () => {
     let currentUserName = location.state?.userProfile?.name;
     if (!currentUserName) {
@@ -116,7 +129,7 @@ const ArchitectAccounts = () => {
     return currentUserName || localStorage.getItem("user_role") || "Admin";
   };
 
-  // ─── 📊 FETCH MASTER DECORATIVE PRODUCTS ───
+  // Fetch Master Decorative Products
   const fetchMasterDecorativeProducts = async () => {
     try {
       const { data, error } = await supabase
@@ -135,10 +148,9 @@ const ArchitectAccounts = () => {
     fetchMasterDecorativeProducts();
   }, []);
 
-  // ─── 📊 ARCHITECT DETAIL SUMMARY FETCH & GROUPING ───
+  // Architect Detail Summary Fetch & Grouping
   const fetchArchitectSummary = async (architectName) => {
     setDetailsModal({ show: true, loading: true, architectName, summaryData: {} });
-    setTransferState(prev => ({ ...prev, show: false })); 
 
     try {
       const { data, error } = await supabase
@@ -147,7 +159,6 @@ const ArchitectAccounts = () => {
         .eq('architect_name', architectName);
       if (error) throw error;
 
-      // Grouping Logic
       const grouped = data.reduce((acc, row) => {
         const sku = row.product_sku || 'UNKNOWN';
         const sheetsCount = parseFloat(row.total_eligible_sheets || 0); 
@@ -185,7 +196,7 @@ const ArchitectAccounts = () => {
     }
   };
 
-// ─── 🔄 TRANSFER NATURES SIGNATURE LOGIC ───
+  // Transfer Nature's Signature Logic
   const handleTransferSubmit = async () => {
     const qtyToTransfer = parseFloat(transferState.transferQty);
     if (!qtyToTransfer || qtyToTransfer <= 0) {
@@ -202,41 +213,32 @@ const ArchitectAccounts = () => {
     showToast("⏳ Processing database bifurcation...", "loading", false);
 
     try {
-      // 1. Aggressive Normalization for Matching
-      // This turns "decorative-DUROTEAK-ALLTHICKNESS (All Thickness)" AND "DECORATIVE_DURO TEAK_" 
-      // into exactly "DECORATIVEDUROTEAK" so they match 100% of the time.
       const superNormalize = (sku) => {
         if (!sku) return '';
         let str = String(sku).toUpperCase();
-        str = str.split('(')[0]; // Remove "(All Thickness)"
-        str = str.replace(/ALLTHICKNESS/g, ''); // Remove "ALLTHICKNESS"
-        str = str.replace(/[^A-Z0-9]/g, ''); // Remove all spaces, hyphens, and underscores
+        str = str.split('(')[0]; 
+        str = str.replace(/ALLTHICKNESS/g, ''); 
+        str = str.replace(/[^A-Z0-9]/g, ''); 
         return str;
       };
 
-      // 2. Format Fallback for New Database Rows
-   // 2. Format Fallback for New Database Rows
-      // Forces any selected dropdown value to become strictly "DECORATIVE_..._" for inserting
       const formatSkuForDB = (dropdownVal) => {
         let str = String(dropdownVal).toUpperCase().split('(')[0];
         str = str.replace(/ALLTHICKNESS/g, '').trim();
-        str = str.replace(/^DECORATIVE-/, 'DECORATIVE_'); // Fix prefix
-        str = str.replace(/-/g, ' ').trim(); // Replace other hyphens with spaces
-        str = str.replace(/DUROTEAK/g, 'DURO TEAK'); // Add space in Duro Teak
-        if (!str.endsWith('_')) str += '_'; // Ensure trailing underscore
+        str = str.replace(/^DECORATIVE-/, 'DECORATIVE_'); 
+        str = str.replace(/-/g, ' ').trim(); 
+        str = str.replace(/DUROTEAK/g, 'DURO TEAK'); 
+        if (!str.endsWith('_')) str += '_'; 
         return str;
       };
 
       const sourceSkuNormalized = superNormalize(transferState.sourceSku);
 
-      // Match against master list to find rate (price)
       const targetMasterProduct = decorativeMasterList.find(p => superNormalize(p.sku) === superNormalize(transferState.targetSku));
       const targetRate = targetMasterProduct ? parseFloat(targetMasterProduct.price || 0) : 0;
       
-      // 🚨 FIX: Always force formatting before saving to the DB! Never use the messy master list string.
       const exactTargetSku = formatSkuForDB(transferState.targetSku);
 
-      // Fetch all rows for this specific architect
       const { data: allRows, error: fetchError } = await supabase
         .from('commission_ledger')
         .select('*')
@@ -244,7 +246,6 @@ const ArchitectAccounts = () => {
 
       if (fetchError) throw fetchError;
 
-      // Find source rows matching the source SKU (Nature's Signature)
       const matchingRows = (allRows || []).filter(row =>
         superNormalize(row.product_sku) === sourceSkuNormalized
       );
@@ -253,14 +254,11 @@ const ArchitectAccounts = () => {
         throw new Error("No matching source product SKU records found for this architect.");
       }
 
-      // Check if target row already exists for this architect using aggressive match
       const existingTargetRow = (allRows || []).find(row =>
         superNormalize(row.product_sku) === superNormalize(transferState.targetSku)
       );
 
-      // ─── 🔄 HANDLE TARGET ROW (UPDATE OR INSERT) ───
       if (existingTargetRow) {
-        // CASE A: Target EXISTS -> Update total sheets and calculate fresh payout amount
         const newTargetSheets = parseFloat(existingTargetRow.total_eligible_sheets || 0) + qtyToTransfer;
         const newTargetPayout = newTargetSheets * targetRate;
 
@@ -275,23 +273,19 @@ const ArchitectAccounts = () => {
           .eq('product_sku', existingTargetRow.product_sku); 
 
         if (updateTargetErr) throw updateTargetErr;
-     } else {
-        // CASE B: Target DOES NOT EXIST -> Create new bifurcated row with dynamic suffix
+      } else {
         const templateRow = matchingRows[0];
         const rawClaimNo = templateRow.claim_no || "CLAIM";
         
-        // 1. Parse the incoming claim structure to preserve its specific parent branch hierarchy
         const claimParts = rawClaimNo.split('-');
         const rootClaimNo = claimParts[0]; 
-        const currentSuffix = claimParts[1] || "1"; // Default to 1 if it's an un-hyphenated root base claim
+        const currentSuffix = claimParts[1] || "1"; 
         
         let bifurcatedClaimNo = '';
         
-        // 2. Check if the current processed item is a Nature's Signature SKU
-       const isNaturesSig = /NATURE'?S?[\s_]*SIGNATURE/i.test(transferState.sourceSku || '');
+        const isNaturesSig = /NATURE'?S?[\s_]*SIGNATURE/i.test(transferState.sourceSku || '');
 
         if (isNaturesSig) {
-          // 💡 Deep Sub-Bifurcation Rule (e.g., "C268145-2" becomes "C268145-2-1.1", then "C268145-2-1.2")
           const targetBasePattern = `${rootClaimNo}-${currentSuffix}-1`;
           
           const existingSubCount = (allRows || []).filter(row => 
@@ -300,7 +294,6 @@ const ArchitectAccounts = () => {
           
           bifurcatedClaimNo = `${targetBasePattern}.${existingSubCount + 1}`;
         } else {
-          // Standard integer tracking for non-Nature Signature SKUs (e.g., "C268145-2" splits to "C268145-3")
           const existingSuffixCount = (allRows || []).filter(row => 
             row.claim_no && row.claim_no.startsWith(rootClaimNo + '-')
           ).length;
@@ -312,7 +305,7 @@ const ArchitectAccounts = () => {
 
         const newRow = {
           ...templateRow, 
-          claim_no: bifurcatedClaimNo, // Outputs clean hierarchical dot formatting or flat sequential hyphens
+          claim_no: bifurcatedClaimNo, 
           product_sku: exactTargetSku, 
           total_eligible_sheets: qtyToTransfer,
           matrix_rate: targetRate,
@@ -331,7 +324,6 @@ const ArchitectAccounts = () => {
         if (insertTargetErr) throw insertTargetErr;
       }
 
-      // ─── 🗑️ DEDUCT OR DELETE NATURES SIGNATURE RECORDS (RUNS IN BOTH CASES) ───
       let remainingToDeduct = qtyToTransfer;
 
       for (const row of matchingRows) {
@@ -345,7 +337,6 @@ const ArchitectAccounts = () => {
         remainingToDeduct -= deduct;
 
         if (newSheets <= 0) {
-          // If sheets hit zero, DELETE it from the database
           const { error: deleteErr } = await supabase
             .from('commission_ledger')
             .delete()
@@ -355,7 +346,6 @@ const ArchitectAccounts = () => {
 
           if (deleteErr) throw deleteErr;
         } else {
-          // Reduce sheets and update total payout
           const sourceRate = parseFloat(row.matrix_rate || 0);
           const newPayout = newSheets * sourceRate;
 
@@ -388,7 +378,6 @@ const ArchitectAccounts = () => {
     }
   };
 
-  // Wrapped fetchLedgerData in useCallback to stabilize reference across cycles
   const fetchLedgerData = useCallback(async () => {
     setLoading(true);
     try {
@@ -431,7 +420,6 @@ const ArchitectAccounts = () => {
     fetchLedgerData();
   }, [fetchLedgerData]);
 
-  // Compute Group-By aggregations based purely on the parsed Architect ID code
   useEffect(() => {
     const aggregationMap = {};
 
@@ -451,7 +439,7 @@ const ArchitectAccounts = () => {
           total_sheets: 0,
           raw_pool_payout: 0,
           credited_amount: 0, 
-          hasNaturesSignature: false, // Flag to show pencil icon dynamically
+          hasNaturesSignature: false,
           associatedNames: new Set() 
         };
       }
@@ -460,7 +448,6 @@ const ArchitectAccounts = () => {
       aggregationMap[archId].raw_pool_payout += payout;
       aggregationMap[archId].associatedNames.add(rawName);
 
-      // Check if this active record is a Nature Signature SKU
       const upperSku = (row.product_sku || '').toUpperCase();
       if ((upperSku.includes('NATURES SIGNATURE') || upperSku.includes('NATURE SIGNATURE')) && sheets > 0) {
         aggregationMap[archId].hasNaturesSignature = true;
@@ -478,20 +465,11 @@ const ArchitectAccounts = () => {
       }
     });
 
-    
-
     const compiledRows = Object.keys(aggregationMap).map((key) => {
-     
       const record = aggregationMap[key];
-      
       const isEligible = eligibilityMap[record.uniqueKey] !== 'ineligible';
-      
- 
-
       const actualPayoutAllowed = isEligible ? record.raw_pool_payout : 0;
       const calculatedOutstanding = Math.max(0, actualPayoutAllowed - record.credited_amount);
-
-    
 
       return {
         ...record,
@@ -504,14 +482,12 @@ const ArchitectAccounts = () => {
     compiledRows.sort((a, b) => b.actualPayoutAllowed - a.actualPayoutAllowed);
 
     setArchitectsList(compiledRows);
-   
   }, [rawLedgerData, rawRemittanceData, eligibilityMap]);
 
   const handleFilterChange = (key, value) => {
     setFilters((prev) => ({ ...prev, [key]: value }));
   };
 
-  // Eligibility Update via explicit Name Variants Array matching
   const handleEligibilitySelect = async (rowItem, targetStatus) => {
     const operatorName = await resolveOperatorName();
     const displayLabel = `Architect ID: ${rowItem.architect_id}`;
@@ -588,9 +564,7 @@ const ArchitectAccounts = () => {
     }
   };
 
-// ─── 📊 EXPORT ALL ARCHITECTS SALES SUMMARY TO EXCEL (CSV) ───
   const handleExportExcel = () => {
-    // 1. Group all raw ledger rows by architect name and category on the fly
     const globalSummary = {};
     
     rawLedgerData.forEach(row => {
@@ -613,7 +587,6 @@ const ArchitectAccounts = () => {
       globalSummary[archName][category] += sheetsCount;
     });
 
-    // 2. Build the CSV Document headers & row structure matching the dashboard summary calculations
     let csvContent = "Architect Name,Account ID,Plywood (PW) Sheets,Blockboard (BB) Sheets,Flush Door (FD) Sheets,Decorative Sheets,Total Sheets,Allowed Payout,Balance Due\n";
     
     architectsList.forEach(arch => {
@@ -627,13 +600,10 @@ const ArchitectAccounts = () => {
       const payout = arch.actualPayoutAllowed.toFixed(0);
       const balance = arch.balance_due.toFixed(0);
       
-      // Escape commas in the architect string names safely
       const safeName = name.includes(',') ? `"${name}"` : name;
       csvContent += `${safeName},${arch.architect_id},${pw},${bb},${fd},${dec},${totalSheets},₹${payout},₹${balance}\n`;
     });
 
-    // 3. Fire Native Web File System Downloader Browser Routine 
-    // 💡 FIX: Prepend "\uFEFF" (UTF-8 BOM) so Excel processes the Rupee symbol correctly
     const blob = new Blob(["\uFEFF" + csvContent], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
@@ -645,7 +615,8 @@ const ArchitectAccounts = () => {
     
     logTelemetry("EXPORT_EXCEL_REPORT", "Generated comprehensive sales summary matrix report for Excel.");
   };
- const filteredArchitects = architectsList.filter((row) => {
+
+  const filteredArchitects = architectsList.filter((row) => {
     const searchString = filters.search?.toLowerCase() || '';
     const nameMatch = (row.architect_name?.toLowerCase() || '').includes(searchString);
     const idMatch = (row.architect_id?.toLowerCase() || '').includes(searchString);
@@ -661,19 +632,17 @@ const ArchitectAccounts = () => {
       (filters.status === 'balance' && row.balance_due > 0) ||
       (filters.status === 'cleared' && row.balance_due === 0);
 
-    // Filter condition for rows that contain the pencil icon
-    const matchesPencil = !filters.pencilOnly || row.hasNaturesSignature; // <-- Add this line
-
+    const matchesPencil = !filters.pencilOnly || row.hasNaturesSignature;
     const matchesState = filters.state === '' || (row.state && row.state.toLowerCase() === filters.state.toLowerCase());
 
-    // <-- Update the return statement to include matchesState
     return matchesSearch && matchesElig && matchesStatus && matchesPencil && matchesState;
   });
- const kpi = filteredArchitects.reduce((acc, row) => {
+
+  const kpi = filteredArchitects.reduce((acc, row) => {
     acc.totalArchitects++;
     if (row.isEligible) {
       acc.eligible++;
-      acc.totalSheets += row.total_sheets || 0; //   ONLY ADD IF ELIGIBLE
+      acc.totalSheets += row.total_sheets || 0;
     } else {
       acc.notEligible++;
     }
@@ -691,8 +660,28 @@ const ArchitectAccounts = () => {
     balanceDue: 0,
     totalSheets: 0,
   });
-// Extract unique states for the filter dropdown
+
   const uniqueStates = [...new Set(architectsList.map(item => item.state).filter(Boolean))];
+
+  // Target SKUs filtered for Searchable Dropdown
+  const filteredTargetSkus = decorativeMasterList
+    .filter(item => {
+      const upper = item.sku.toUpperCase();
+      return !upper.includes('NATURES SIGNATURE') && !upper.includes('NATURE SIGNATURE');
+    })
+    .filter(item => {
+      if (!targetSkuSearch) return true;
+      const search = targetSkuSearch.toLowerCase();
+      const skuMatch = item.sku.toLowerCase().includes(search);
+      const sizeMatch = item.size ? item.size.toLowerCase().includes(search) : false;
+      return skuMatch || sizeMatch;
+    });
+
+  // Selected Target Product Rate
+  const selectedTargetProduct = decorativeMasterList.find(p => p.sku === transferState.targetSku);
+  const selectedRate = selectedTargetProduct ? parseFloat(selectedTargetProduct.price || 0) : 0;
+  const estimatedPayout = (parseFloat(transferState.transferQty || 0) * selectedRate);
+
   const getToastStyles = () => {
     switch (toast.type) {
       case 'success': return { bg: '#10b981', color: '#fff' };
@@ -705,7 +694,7 @@ const ArchitectAccounts = () => {
   return (
     <div className="page" id="page-accounts" style={{ fontFamily: 'Inter, sans-serif', padding: '16px', maxWidth: '100%', boxSizing: 'border-box', overflowX: 'hidden', position: 'relative' }}>
       
-      {/* ── REACT MODAL COMPONENT OVERLAY ── */}
+      {/* ── REACT MODAL CONFIRMATION OVERLAY ── */}
       {modal.show && (
         <div style={{
           position: 'fixed', top: 0, left: 0, width: '100vw', height: '100vh',
@@ -745,135 +734,107 @@ const ArchitectAccounts = () => {
         </div>
       )}
 
-      {/* ── ARCHITECT DETAILS SUMMARY MODAL ── */}
+      {/* ── 🌟 ENHANCED WIDE ARCHITECT DETAILS SUMMARY MODAL ── */}
       {detailsModal.show && (
         <div style={{
           position: 'fixed', top: 0, left: 0, width: '100vw', height: '100vh',
-          backgroundColor: 'rgba(15, 23, 42, 0.6)', backdropFilter: 'blur(4px)',
+          backgroundColor: 'rgba(15, 23, 42, 0.65)', backdropFilter: 'blur(5px)',
           display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 10005,
         }}>
           <div style={{
-            background: '#fff', borderRadius: '12px', width: '640px', maxWidth: '90%', maxHeight: '85vh',
-            padding: '24px', boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.1)', boxSizing: 'border-box',
+            background: '#ffffff', borderRadius: '16px', width: '780px', maxWidth: '92vw', maxHeight: '85vh',
+            padding: '24px 28px', boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.25)', boxSizing: 'border-box',
             display: 'flex', flexDirection: 'column'
           }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', borderBottom: '1px solid #e5e7eb', paddingBottom: '16px', marginBottom: '16px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', borderBottom: '1px solid #e2e8f0', paddingBottom: '16px', marginBottom: '16px' }}>
               <div>
-                <h3 style={{ margin: 0, fontSize: '18px', fontWeight: 600, color: '#111827' }}>Sales Summary</h3>
-                <p style={{ margin: '4px 0 0 0', fontSize: '13px', color: '#6b7280' }}>{detailsModal.architectName}</p>
+                <h3 style={{ margin: 0, fontSize: '19px', fontWeight: 700, color: '#0f172a' }}>Sales Summary Breakdown</h3>
+                <p style={{ margin: '4px 0 0 0', fontSize: '13.5px', color: '#64748b' }}>{detailsModal.architectName}</p>
               </div>
               <button 
                 onClick={() => setDetailsModal({ show: false, loading: false, architectName: '', summaryData: {} })} 
-                style={{ background: 'none', border: 'none', fontSize: '20px', cursor: 'pointer', color: '#6b7280' }}
+                style={{ background: '#f1f5f9', border: 'none', borderRadius: '50%', width: '32px', height: '32px', fontSize: '16px', cursor: 'pointer', color: '#64748b', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
               >✕</button>
             </div>
 
-            {/* ISOLATED & STABLE CONVERSION FORM */}
-            {transferState.show && (
-              <div style={{ 
-                background: '#f0f9ff', 
-                padding: '16px', 
-                borderRadius: '8px',
-                border: '1px solid #bae6fd',
-                marginBottom: '16px',
-                display: 'flex', flexDirection: 'column', gap: '10px'
-              }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <h4 style={{ margin: 0, color: '#0369a1', fontSize: '13px', fontWeight: 600 }}>
-                    Convert Sheets: <span style={{ color: '#0f172a', fontWeight: 'bold' }}>{transferState.sourceSku}</span>
-                  </h4>
-                  <button onClick={() => setTransferState(prev => ({ ...prev, show: false }))} style={{ background: 'none', border: 'none', color: '#64748b', cursor: 'pointer', fontSize: '14px' }}>✕ Close Panel</button>
-                </div>
-                
-                <div style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
-                  <select 
-                    value={transferState.targetSku}
-                    onChange={e => setTransferState(prev => ({ ...prev, targetSku: e.target.value }))}
-                    style={{ flex: 2, minWidth: '200px', padding: '8px', borderRadius: '6px', border: '1px solid #93c5fd', fontSize: '12.5px', color: '#0f172a' }}
-                  >
-                    <option value="">-- Select Target Decorative Product --</option>
-                    {decorativeMasterList
-                      .filter(item => !item.sku.toUpperCase().includes('NATURES SIGNATURE') && !item.sku.toUpperCase().includes('NATURE SIGNATURE'))
-                      .map(item => (
-                        <option key={item.sku} value={item.sku}>{item.sku} {item.size ? `(${item.size})` : ''}</option>
-                      ))
-                    }
-                  </select>
-                  
-                  <input 
-                    type="number" 
-                    placeholder={`Qty (Max ${transferState.maxQty})`}
-                    max={transferState.maxQty}
-                    min="1"
-                    value={transferState.transferQty}
-                    onChange={e => setTransferState(prev => ({ ...prev, transferQty: e.target.value }))}
-                    style={{ width: '110px', padding: '8px', borderRadius: '6px', border: '1px solid #93c5fd', fontSize: '12.5px' }}
-                  />
-                  
-                  <button 
-                    onClick={handleTransferSubmit}
-                    disabled={transferState.loading}
-                    style={{
-                      background: '#0284c7', color: '#fff', border: 'none', borderRadius: '6px',
-                      padding: '8px 16px', fontSize: '12.5px', fontWeight: 600, cursor: transferState.loading ? 'not-allowed' : 'pointer',
-                      opacity: transferState.loading ? 0.7 : 1
-                    }}
-                  >
-                    {transferState.loading ? 'Updating...' : 'Confirm'}
-                  </button>
-                </div>
-              </div>
-            )}
-
-            <div style={{ overflowY: 'auto', flexGrow: 1, paddingRight: '4px' }}>
+            <div style={{ overflowY: 'auto', flexGrow: 1, paddingRight: '6px' }}>
               {detailsModal.loading ? (
-                <div style={{ padding: '40px', textAlign: 'center', color: '#6b7280', fontSize: '14px' }}>⏳ Calculating SKU summaries...</div>
+                <div style={{ padding: '40px', textAlign: 'center', color: '#64748b', fontSize: '14px' }}>⏳ Calculating SKU summaries...</div>
               ) : Object.keys(detailsModal.summaryData).length === 0 ? (
-                <div style={{ padding: '40px', textAlign: 'center', color: '#9ca3af', fontSize: '14px' }}>No eligible sheets found for this architect.</div>
+                <div style={{ padding: '40px', textAlign: 'center', color: '#94a3b8', fontSize: '14px' }}>No eligible sheets found for this architect.</div>
               ) : (
                 Object.entries(detailsModal.summaryData).map(([category, data]) => (
-                  <div key={category} style={{ marginBottom: '20px', border: '1px solid #e5e7eb', borderRadius: '8px', overflow: 'hidden' }}>
-                    
-                    {/* Category Header (e.g., PW, BB, Decorative) */}
-                    <div style={{ background: '#f9fafb', padding: '12px 16px', display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid #e5e7eb' }}>
-                      <strong style={{ fontSize: '14px', color: '#374151' }}>{category}</strong>
+                  <div key={category} style={{ marginBottom: '20px', border: '1px solid #e2e8f0', borderRadius: '10px', overflow: 'hidden' }}>
+                    <div style={{ background: '#f8fafc', padding: '12px 18px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid #e2e8f0' }}>
+                      <strong style={{ fontSize: '14px', color: '#1e293b' }}>{category}</strong>
                       <strong style={{ fontSize: '14px', color: '#059669' }}>Total: {data.categoryTotal.toFixed(1)} Sheets</strong>
                     </div>
                     
-                    {/* Specific SKUs */}
-                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
+                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13.5px', tableLayout: 'fixed' }}>
                       <tbody>
                         {Object.entries(data.skus).map(([sku, total], idx) => {
-                         const isNaturesSignature = /NATURE'?S?[\s_]*SIGNATURE/i.test(sku || '');
+                          const isNaturesSignature = /NATURE'?S?[\s_]*SIGNATURE/i.test(sku || '');
                           return (
-                            <tr key={sku} style={{ borderBottom: idx === Object.keys(data.skus).length - 1 ? 'none' : '1px solid #f3f4f6' }}>
-                              <td style={{ padding: '10px 16px', color: '#4b5563' }}>
-                                {sku}
-                              </td>
-                              <td style={{ padding: '10px 16px', textAlign: 'right', fontWeight: 500, color: '#111827', display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: '12px' }}>
-                                <span>{total.toFixed(1)} Sheets</span>
-                                
-                                {isNaturesSignature && (
-                                  <button 
-                                    onClick={() => setTransferState({
-                                      show: true,
-                                      loading: false,
-                                      sourceSku: sku,
-                                      maxQty: total,
-                                      targetSku: '',
-                                      transferQty: ''
-                                    })}
-                                    style={{
-                                      background: '#eff6ff', color: '#2563eb', border: '1px solid #bfdbfe',
-                                      borderRadius: '4px', padding: '4px 8px', fontSize: '11px', cursor: 'pointer',
-                                      fontWeight: 600, display: 'flex', alignItems: 'center', gap: '4px'
-                                    }}
-                                  >
-                                    ✏️ Edit
-                                  </button>
-                                )}
-                              </td>
-                            </tr>
+                           <tr key={sku} style={{ borderBottom: idx === Object.keys(data.skus).length - 1 ? 'none' : '1px solid #f1f5f9' }}>
+  <td colSpan={2} style={{ padding: '12px 18px' }}>
+    <div style={{
+      display: 'flex',
+      justify: 'space-between',
+      alignItems: 'center',
+      flexWrap: 'wrap',
+      gap: '12px'
+    }}>
+      
+      {/* Product SKU Name - Wraps automatically to the next line when long */}
+      <div 
+        title={sku}
+        style={{ 
+          flex: '1 1 260px', 
+          color: '#0f172a', 
+          fontWeight: 500,
+          lineHeight: '1.4',
+          wordBreak: 'break-word',
+          overflowWrap: 'anywhere'
+        }}
+      >
+        {sku}
+      </div>
+
+      {/* Sheet Count & Convert Button Container */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexShrink: 0, marginLeft: 'auto' }}>
+        <span style={{ fontWeight: 600, color: '#0f172a', whiteSpace: 'nowrap' }}>
+          {total.toFixed(1)} Sheets
+        </span>
+        
+        {isNaturesSignature && (
+          <button 
+            onClick={() => {
+              setTransferState({
+                show: true,
+                loading: false,
+                sourceSku: sku,
+                maxQty: total,
+                targetSku: '',
+                transferQty: total.toString()
+              });
+              setTargetSkuSearch('');
+              setTargetDropdownOpen(false);
+            }}
+            style={{
+              background: '#0284c7', color: '#ffffff', border: 'none',
+              borderRadius: '6px', padding: '6px 12px', fontSize: '12px', cursor: 'pointer',
+              fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: '5px',
+              boxShadow: '0 2px 4px rgba(2, 132, 199, 0.2)', flexShrink: 0
+            }}
+          >
+            ✏️ Convert Product
+          </button>
+        )}
+      </div>
+
+    </div>
+  </td>
+</tr>
                           );
                         })}
                       </tbody>
@@ -886,17 +847,247 @@ const ArchitectAccounts = () => {
         </div>
       )}
 
+      {/* ── DEDICATED HIGH-CAPACITY NATURE'S SIGNATURE CONVERSION MODAL ── */}
+      {transferState.show && (
+        <div style={{
+          position: 'fixed', top: 0, left: 0, width: '100vw', height: '100vh',
+          backgroundColor: 'rgba(15, 23, 42, 0.75)', backdropFilter: 'blur(6px)',
+          display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 10020,
+        }}>
+          <div style={{
+            background: '#ffffff', borderRadius: '16px', width: '700px', maxWidth: '92%',
+            padding: '28px', boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.25)', boxSizing: 'border-box',
+            display: 'flex', flexDirection: 'column', gap: '20px'
+          }}>
+            
+            {/* Modal Header */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid #f1f5f9', paddingBottom: '16px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <div style={{ width: '40px', height: '40px', borderRadius: '10px', background: '#e0f2fe', color: '#0284c7', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '20px' }}>
+                  🔄
+                </div>
+                <div>
+                  <h3 style={{ margin: 0, fontSize: '18px', fontWeight: 700, color: '#0f172a' }}>
+                    Convert Nature's Signature SKU
+                  </h3>
+                  <p style={{ margin: '2px 0 0 0', fontSize: '13px', color: '#64748b' }}>
+                    Select target decorative product and sheet volume to update ledger.
+                  </p>
+                </div>
+              </div>
+              <button 
+                onClick={() => setTransferState(prev => ({ ...prev, show: false }))}
+                style={{ background: '#f1f5f9', border: 'none', borderRadius: '50%', width: '32px', height: '32px', fontSize: '16px', cursor: 'pointer', color: '#64748b', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+              >✕</button>
+            </div>
+
+            {/* Source Product Banner */}
+            <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: '10px', padding: '14px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '16px' }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <span style={{ fontSize: '11px', fontWeight: 600, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Source Product</span>
+                <div style={{ fontSize: '14px', fontWeight: 600, color: '#0f172a', marginTop: '2px', wordBreak: 'break-word' }}>
+                  {transferState.sourceSku}
+                </div>
+              </div>
+              <div style={{ textAlign: 'right', flexShrink: 0 }}>
+                <span style={{ fontSize: '11px', fontWeight: 600, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Available Volume</span>
+                <div style={{ fontSize: '15px', fontWeight: 700, color: '#0284c7', marginTop: '2px' }}>
+                  {transferState.maxQty.toFixed(1)} Sheets
+                </div>
+              </div>
+            </div>
+
+            {/* Target SKU Selection with Searchable Combobox */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', position: 'relative' }} ref={dropdownRef}>
+              <label style={{ fontSize: '13px', fontWeight: 600, color: '#334155' }}>
+                Search & Select Target Decorative SKU <span style={{ color: '#ef4444' }}>*</span>
+              </label>
+
+              {/* Text Search Bar Input */}
+              <div style={{ position: 'relative' }}>
+                <input
+                  type="text"
+                  placeholder="🔍 Type product name, code, or thickness (e.g. Duro Teak, 1mm)..."
+                  value={targetSkuSearch || transferState.targetSku}
+                  onFocus={() => setTargetDropdownOpen(true)}
+                  onChange={(e) => {
+                    setTargetSkuSearch(e.target.value);
+                    setTransferState(prev => ({ ...prev, targetSku: '' }));
+                    setTargetDropdownOpen(true);
+                  }}
+                  style={{
+                    width: '100%',
+                    padding: '11px 14px',
+                    borderRadius: '8px',
+                    border: '1.5px solid',
+                    borderColor: transferState.targetSku ? '#0284c7' : '#cbd5e1',
+                    fontSize: '13.5px',
+                    color: '#0f172a',
+                    outline: 'none',
+                    boxSizing: 'border-box',
+                    background: transferState.targetSku ? '#f0f9ff' : '#ffffff'
+                  }}
+                />
+                {transferState.targetSku && (
+                  <button
+                    onClick={() => {
+                      setTransferState(prev => ({ ...prev, targetSku: '' }));
+                      setTargetSkuSearch('');
+                      setTargetDropdownOpen(true);
+                    }}
+                    style={{
+                      position: 'absolute', right: '12px', top: '50%', transform: 'translateY(-50%)',
+                      background: 'none', border: 'none', color: '#94a3b8', cursor: 'pointer', fontSize: '14px'
+                    }}
+                  >
+                    ✕
+                  </button>
+                )}
+              </div>
+
+              {/* Dynamic Filtered Dropdown Results List */}
+              {targetDropdownOpen && (
+                <div style={{
+                  position: 'absolute',
+                  top: '100%',
+                  left: 0,
+                  right: 0,
+                  marginTop: '4px',
+                  maxHeight: '220px',
+                  overflowY: 'auto',
+                  background: '#ffffff',
+                  border: '1px solid #cbd5e1',
+                  borderRadius: '10px',
+                  boxShadow: '0 10px 25px -5px rgba(0, 0, 0, 0.15)',
+                  zIndex: 10030
+                }}>
+                  {filteredTargetSkus.length === 0 ? (
+                    <div style={{ padding: '14px', textAlign: 'center', color: '#94a3b8', fontSize: '13px' }}>
+                      No matching decorative products found.
+                    </div>
+                  ) : (
+                    filteredTargetSkus.map((item) => (
+                      <div
+                        key={item.sku}
+                        onClick={() => {
+                          setTransferState(prev => ({ ...prev, targetSku: item.sku }));
+                          setTargetSkuSearch(item.sku);
+                          setTargetDropdownOpen(false);
+                        }}
+                        style={{
+                          padding: '10px 14px',
+                          cursor: 'pointer',
+                          borderBottom: '1px solid #f1f5f9',
+                          display: 'flex',
+                          justify: 'space-between',
+                          alignItems: 'center',
+                          fontSize: '13px',
+                          background: transferState.targetSku === item.sku ? '#e0f2fe' : '#ffffff'
+                        }}
+                      >
+                        <div style={{ flex: 1, minWidth: 0, paddingRight: '10px', wordBreak: 'break-word' }}>
+                          <span style={{ fontWeight: 600, color: '#0f172a' }}>{item.sku}</span>
+                          {item.size && <span style={{ marginLeft: '8px', color: '#64748b', fontSize: '12px' }}>({item.size})</span>}
+                        </div>
+                        <span style={{ fontWeight: 600, color: '#059669', fontSize: '12.5px', flexShrink: 0 }}>
+                          ₹{parseFloat(item.price || 0).toLocaleString('en-IN')}/sheet
+                        </span>
+                      </div>
+                    ))
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* Quantity Input & Quick Fill */}
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <label style={{ fontSize: '13px', fontWeight: 600, color: '#334155' }}>
+                    Sheets Quantity to Transfer <span style={{ color: '#ef4444' }}>*</span>
+                  </label>
+                  <button
+                    onClick={() => setTransferState(prev => ({ ...prev, transferQty: prev.maxQty.toString() }))}
+                    style={{ background: '#e0f2fe', color: '#0369a1', border: 'none', borderRadius: '4px', padding: '2px 8px', fontSize: '11px', fontWeight: 600, cursor: 'pointer' }}
+                  >
+                    Max
+                  </button>
+                </div>
+                <input
+                  type="number"
+                  placeholder={`Max ${transferState.maxQty}`}
+                  max={transferState.maxQty}
+                  min="0.1"
+                  step="0.1"
+                  value={transferState.transferQty}
+                  onChange={(e) => setTransferState(prev => ({ ...prev, transferQty: e.target.value }))}
+                  style={{
+                    padding: '11px 14px',
+                    borderRadius: '8px',
+                    border: '1.5px solid #cbd5e1',
+                    fontSize: '13.5px',
+                    color: '#0f172a',
+                    outline: 'none'
+                  }}
+                />
+              </div>
+
+              {/* Live Payout Summary Banner */}
+              <div style={{ background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: '10px', padding: '12px 14px', display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
+                <span style={{ fontSize: '11px', fontWeight: 600, color: '#166534', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                  Target Rate & Estimated Payout
+                </span>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginTop: '4px' }}>
+                  <span style={{ fontSize: '12px', color: '#15803d' }}>
+                    Rate: ₹{selectedRate}/sheet
+                  </span>
+                  <span style={{ fontSize: '16px', fontWeight: 700, color: '#166534' }}>
+                    ₹{estimatedPayout.toLocaleString('en-IN', { maximumFractionDigits: 0 })}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* Modal Footer Actions */}
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px', borderTop: '1px solid #f1f5f9', paddingTop: '16px', marginTop: '4px' }}>
+              <button
+                onClick={() => setTransferState(prev => ({ ...prev, show: false }))}
+                style={{
+                  background: '#f1f5f9', color: '#475569', border: '1px solid #cbd5e1',
+                  borderRadius: '8px', padding: '10px 20px', fontSize: '13px', fontWeight: 600, cursor: 'pointer'
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleTransferSubmit}
+                disabled={transferState.loading || !transferState.targetSku || !transferState.transferQty}
+                style={{
+                  background: transferState.loading || !transferState.targetSku || !transferState.transferQty ? '#94a3b8' : '#0284c7',
+                  color: '#ffffff', border: 'none', borderRadius: '8px',
+                  padding: '10px 24px', fontSize: '13px', fontWeight: 600,
+                  cursor: transferState.loading || !transferState.targetSku || !transferState.transferQty ? 'not-allowed' : 'pointer',
+                  boxShadow: '0 4px 6px -1px rgba(2, 132, 199, 0.3)'
+                }}
+              >
+                {transferState.loading ? '⏳ Processing Transfer...' : 'Confirm Transfer & Update Ledger'}
+              </button>
+            </div>
+
+          </div>
+        </div>
+      )}
+
       {/* ── FLOATING TOAST SNACKBAR ── */}
-     {/* ── FLOATING TOAST SNACKBAR ── */}
-{toast.show && (
-  <div style={{
-    position: 'fixed', bottom: '24px', right: '24px', 
-    padding: '12px 20px', borderRadius: '8px',
-    backgroundColor: getToastStyles().bg, color: getToastStyles().color, fontSize: '13px', fontWeight: '500',
-    boxShadow: '0 4px 12px rgba(0,0,0,0.15)', 
-    zIndex: 20000, // 🔥 Changed from 9999 to 20000 to overlay above the edit modal
-    display: 'flex', alignItems: 'center', gap: '8px', transition: 'all 0.2s ease-in-out',
-  }}>
+      {toast.show && (
+        <div style={{
+          position: 'fixed', bottom: '24px', right: '24px', 
+          padding: '12px 20px', borderRadius: '8px',
+          backgroundColor: getToastStyles().bg, color: getToastStyles().color, fontSize: '13px', fontWeight: '500',
+          boxShadow: '0 4px 12px rgba(0,0,0,0.15)', 
+          zIndex: 20050, 
+          display: 'flex', alignItems: 'center', gap: '8px', transition: 'all 0.2s ease-in-out',
+        }}>
           {toast.message}
           {toast.type !== 'loading' && (
             <span style={{ cursor: 'pointer', marginLeft: '10px', opacity: 0.7 }} 
@@ -1003,15 +1194,15 @@ const ArchitectAccounts = () => {
               <option value="ineligible">❌ Not Eligible</option>
             </select>
             <select
-  value={filters.state}
-  onChange={(e) => handleFilterChange('state', e.target.value)}
-  style={{ padding: '8px', borderRadius: '6px', border: '1px solid #d1d5db', fontSize: '13px' }}
->
-  <option value="">All States</option>
-  {uniqueStates.map((state, index) => (
-    <option key={index} value={state}>{state}</option>
-  ))}
-</select>
+              value={filters.state}
+              onChange={(e) => handleFilterChange('state', e.target.value)}
+              style={{ padding: '8px', borderRadius: '6px', border: '1px solid #d1d5db', fontSize: '13px' }}
+            >
+              <option value="">All States</option>
+              {uniqueStates.map((state, index) => (
+                <option key={index} value={state}>{state}</option>
+              ))}
+            </select>
             <select
               className="sel"
               style={{ width: '120px', padding: '6px', fontSize: '12px', border: '1px solid #d1d5db', borderRadius: '4px' }}
@@ -1023,28 +1214,28 @@ const ArchitectAccounts = () => {
               <option value="cleared">Fully Paid</option>
             </select>
           </div>
-          {/* Add this inside your filtration control inputs section */}
-<button
-  onClick={() => handleFilterChange('pencilOnly', !filters.pencilOnly)}
-  style={{
-    fontSize: '12px',
-    padding: '6px 12px',
-    cursor: 'pointer',
-    fontWeight: 500,
-    borderRadius: '4px',
-    border: '1px solid',
-    borderColor: filters.pencilOnly ? '#2563eb' : '#d1d5db',
-    background: filters.pencilOnly ? '#eff6ff' : '#fff',
-    color: filters.pencilOnly ? '#2563eb' : '#374151',
-    display: 'flex',
-    alignItems: 'center',
-    gap: '6px',
-    transition: 'all 0.2s ease'
-  }}
->
-  <span>✏️</span> 
-  {filters.pencilOnly ? 'Showing Nature Signature' : 'Filter by Nature Signature'}
-</button>
+
+          <button
+            onClick={() => handleFilterChange('pencilOnly', !filters.pencilOnly)}
+            style={{
+              fontSize: '12px',
+              padding: '6px 12px',
+              cursor: 'pointer',
+              fontWeight: 500,
+              borderRadius: '4px',
+              border: '1px solid',
+              borderColor: filters.pencilOnly ? '#2563eb' : '#d1d5db',
+              background: filters.pencilOnly ? '#eff6ff' : '#fff',
+              color: filters.pencilOnly ? '#2563eb' : '#374151',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px',
+              transition: 'all 0.2s ease'
+            }}
+          >
+            <span>✏️</span> 
+            {filters.pencilOnly ? 'Showing Nature Signature' : 'Filter by Nature Signature'}
+          </button>
         </div>
 
         {/* Dynamic Table Content Renderer */}
@@ -1063,12 +1254,12 @@ const ArchitectAccounts = () => {
                   <th style={{ padding: '10px 12px', width: '10%', textAlign: 'right' }}>Sheets</th>
                   <th style={{ padding: '10px 12px', width: '13%', textAlign: 'right' }}>Pool Payout</th>
                   <th style={{ padding: '10px 12px', width: '13%', textAlign: 'right' }}>Paid</th>
-                  <th style={{ padding: '10px 12px', textAlign: 'left',width:'16%' }}>State</th>
+                  <th style={{ padding: '10px 12px', textAlign: 'left', width: '16%' }}>State</th>
                   <th style={{ padding: '10px 12px', width: '13%', textAlign: 'right' }}>Balance</th>
                   <th style={{ padding: '10px 12px', width: '16%', textAlign: 'center' }}>Eligibility Status</th>
                 </tr>
               </thead>
-             <tbody>
+              <tbody>
                 {filteredArchitects.map((row, index) => (
                   <tr 
                     key={row.uniqueKey} 
@@ -1098,7 +1289,6 @@ const ArchitectAccounts = () => {
                       }} 
                       title={`View sales summary for ${row.architect_name}`}
                     >
-                      {/* Pencil Icon prefix added dynamically in front of the architect name */}
                       {row.hasNaturesSignature && (
                         <span 
                           style={{ 
@@ -1131,8 +1321,8 @@ const ArchitectAccounts = () => {
                       ₹{row.credited_amount.toLocaleString('en-IN', { maximumFractionDigits: 0 })}
                     </td>
                     <td style={{ padding: '10px 12px', color: '#4b5563', fontSize: '13px' }}>
-  {row.state}
-</td>
+                      {row.state}
+                    </td>
                     <td style={{ 
                       padding: '10px 12px', textAlign: 'right', fontWeight: 600, color: row.balance_due > 0 ? '#b91c1c' : '#059669', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                       ₹{row.balance_due.toLocaleString('en-IN', { maximumFractionDigits: 0 })}

@@ -325,6 +325,115 @@ export default function ArchitectDashboard() {
     document.body.removeChild(link);
   };
 
+  // --- ADDITION 1: EXPORT TO EXCEL (NO IMAGES / TEXT ONLY) ---
+  const exportToExcelWithoutImages = () => {
+    if (!registrations || registrations.length === 0) {
+      alert('No data available to export.');
+      return;
+    }
+
+    const headers = [
+      'Architect ID',
+      'Architect Name',
+      'Firm Name',
+      'Architect Phone',
+      'Registration Date',
+      'Dealer Name',
+      'Dealer Shop Name',
+      'Dealer Phone',
+      'Site Address',
+      'Site Owner Phone',
+      'Site Contractor Name',
+      'Site Contractor Phone',
+      'No Site Attached Contractor Name',
+      'No Site Attached Contractor Phone'
+    ];
+
+    const csvRows = [headers.join(',')];
+
+    const formatCell = (val) => {
+      if (val === null || val === undefined || val === '') return '""';
+      const str = String(val);
+      return `"${str.replace(/"/g, '""')}"`;
+    };
+
+    registrations.forEach((row) => {
+      const dealersList = row.dealers && row.dealers.length > 0 ? row.dealers : [];
+      const sitesList = row.sites && row.sites.length > 0 ? row.sites : [];
+      const directContractorsList = row.contractors && row.contractors.length > 0 ? row.contractors : [];
+
+      const maxDealerSiteRows = Math.max(dealersList.length, sitesList.length);
+
+      if (maxDealerSiteRows > 0) {
+        for (let i = 0; i < maxDealerSiteRows; i++) {
+          const dealer = dealersList[i] || {};
+          const site = sitesList[i] || {};
+
+          const rowValues = [
+            formatCell(row.id),
+            formatCell(row.architect_name),
+            formatCell(row.firm_name),
+            formatCell(row.phone_no),
+            formatCell(new Date(row.created_at).toLocaleDateString('en-IN')),
+            
+            // Dealer Info
+            formatCell(dealer.name),
+            formatCell(dealer.shopName),
+            formatCell(dealer.phone),
+            
+            // Site Info
+            formatCell(site.address),
+            formatCell(site.ownerPhone),
+            formatCell(site.contractorName),
+            formatCell(site.contractorPhone),
+            
+            '""',
+            '""'
+          ];
+
+          csvRows.push(rowValues.join(','));
+        }
+      } else if (directContractorsList.length === 0) {
+        const rowValues = [
+          formatCell(row.id),
+          formatCell(row.architect_name),
+          formatCell(row.firm_name),
+          formatCell(row.phone_no),
+          formatCell(new Date(row.created_at).toLocaleDateString('en-IN')),
+          '""', '""', '""',
+          '""', '""', '""', '""',
+          '""', '""'
+        ];
+        csvRows.push(rowValues.join(','));
+      }
+
+      directContractorsList.forEach((contractor) => {
+        const contractorRowValues = [
+          formatCell(row.id),
+          formatCell(row.architect_name),
+          formatCell(row.firm_name),
+          formatCell(row.phone_no),
+          formatCell(new Date(row.created_at).toLocaleDateString('en-IN')),
+          '""', '""', '""',
+          '""', '""', '""', '""',
+          formatCell(contractor.name),
+          formatCell(contractor.phone)
+        ];
+
+        csvRows.push(contractorRowValues.join(','));
+      });
+    });
+
+    const csvContent = 'data:text/csv;charset=utf-8,\uFEFF' + csvRows.join('\n');
+    const encodedUri = encodeURI(csvContent);
+    const link = document.createElement('a');
+    link.setAttribute('href', encodedUri);
+    link.setAttribute('download', `Architect_Registrations_No_Images_${new Date().toISOString().slice(0, 10)}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
   // Export ALL Bills and Dealer Info to PDF using jsPDF
   const exportAllBillsToPDF = async () => {
     if (!registrations || registrations.length === 0) {
@@ -605,6 +714,16 @@ export default function ArchitectDashboard() {
 
         .btn-excel:hover {
           background: #059669;
+        }
+
+        .btn-excel-no-img {
+          background: #0284c7;
+          color: #ffffff;
+          border: 1px solid #0369a1;
+        }
+
+        .btn-excel-no-img:hover {
+          background: #0369a1;
         }
 
         .btn-pdf {
@@ -1115,6 +1234,10 @@ export default function ArchitectDashboard() {
           <div className="header-actions">
             <button onClick={exportAllToExcel} className="btn-action btn-excel" title="Export All Data to Excel with Clickable Image Links">
               <IconDownload /> Export Excel
+            </button>
+            {/* ADDITION 2: BUTTON FOR EXPORTING EXCEL WITHOUT IMAGES */}
+            <button onClick={exportToExcelWithoutImages} className="btn-action btn-excel-no-img" title="Export Data to Excel without Image links">
+              <IconDownload /> Export Excel (Text Only)
             </button>
             <button 
               onClick={exportAllBillsToPDF} 

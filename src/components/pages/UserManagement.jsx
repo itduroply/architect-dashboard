@@ -10,6 +10,7 @@ export default function UserManagement() {
   const [showModal, setShowModal] = useState(false);
   const [isEditMode, setIsEditMode] = useState(false);
   const [selectedUserId, setSelectedUserId] = useState(null);
+  const [selectedAuthUserId, setSelectedAuthUserId] = useState(null);
   
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [showUpdateModal, setShowUpdateModal] = useState(false);
@@ -43,13 +44,11 @@ export default function UserManagement() {
       const activeId = localStorage.getItem('auth_uid');
       const activeRole = localStorage.getItem('user_role') || 'User';
       
-      // Retrieve the name of the user performing the action (the Actor)
       const currentActorName = location.state?.userProfile?.name 
         || localStorage.getItem("user_name") 
         || localStorage.getItem("user_role") 
         || "Admin";
 
-      // Append the actor info to the provided description
       const fullDescription = `[Actor: ${currentActorName}] - ${description}`;
 
       await supabase.from('user_activity_logs').insert({
@@ -121,6 +120,7 @@ export default function UserManagement() {
 
   const handleEditClick = (user) => {
     setSelectedUserId(user.id);
+    setSelectedAuthUserId(user.auth_user_id);
     setIsEditMode(true);
     setFormData({
       name: user.name || '',
@@ -208,6 +208,24 @@ export default function UserManagement() {
     setLoading(true);
     setShowUpdateModal(false);
     try {
+      // 1. Invoke hyper-api Edge Function to update email in auth.users
+      if (selectedAuthUserId) {
+        const { data: funcData, error: funcError } = await supabase.functions.invoke(
+          'hyper-api',
+          {
+            body: {
+              action: 'UPDATE_EMAIL',
+              authUserId: selectedAuthUserId,
+              email: formData.email,
+            },
+          }
+        );
+
+        if (funcError) throw funcError;
+        if (funcData?.error) throw new Error(funcData.error);
+      }
+
+      // 2. Update user profile details in public.users_profile table
       const { error } = await supabase
         .from('users_profile')
         .update({
@@ -312,6 +330,7 @@ export default function UserManagement() {
     });
     setIsEditMode(false);
     setSelectedUserId(null);
+    setSelectedAuthUserId(null);
     setShowModal(false);
   };
 

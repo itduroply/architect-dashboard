@@ -339,9 +339,8 @@ const runClaimProcessor = async () => {
   showNotification("Executing high-speed parallel matrix matching...", "info");
 
   try {
-    // FIXED: Added orderByColumn to ensure deterministic parallel chunks
+    // 1. Optimized parallel fetch function
     const fetchAllRecordsOptimized = async (tableName, columns, orderByColumn) => {
-      // 1. Get the exact row count
       const { count, error: countErr } = await supabase
         .from(tableName)
         .select(columns, { count: 'exact', head: true });
@@ -352,7 +351,6 @@ const runClaimProcessor = async () => {
       const totalRecords = count || 0;
       const promises = [];
 
-      // 2. Queue up identical deterministic page segments
       for (let from = 0; from < totalRecords; from += pageSize) {
         const to = from + pageSize - 1;
         promises.push(
@@ -360,7 +358,7 @@ const runClaimProcessor = async () => {
             .from(tableName)
             .select(columns)
             .range(from, to)
-            .order(orderByColumn) // <-- The Fix: Guarantees zero page overlaps
+            .order(orderByColumn)
             .then(res => {
               if (res.error) throw res.error;
               return res.data || [];
@@ -368,23 +366,19 @@ const runClaimProcessor = async () => {
         );
       }
 
-      // 3. Resolve all requests concurrently
       const chunks = await Promise.all(promises);
       return chunks.flat();
     };
 
-    // EXECUTE PARALLEL FETCHES WITH STRICT ORDERING RULES
+    // 2. Fetch dataset tables
     const dbLeads = await fetchAllRecordsOptimized('leads_master', 'lead_id, linked_architect,state,lead_status', 'lead_id');
     const dbClaims = await fetchAllRecordsOptimized('dmi_claims', 'claim_no, lead_id, status, product_code, approved_qty,claim_date', 'claim_no');
     
-    // Tiny table lookup
     const { data: dbSkus, error: errSkus } = await supabase.from('product_sku_master').select('sku, price');
 
     if (errSkus) {
       throw new Error("Unable to pull core dataset tables from Supabase database storage.");
     }
-
-    console.log(`🚀 Perfect Fetch Complete! Unique Leads: ${dbLeads.length}, Unique Claims: ${dbClaims.length}`);
 
     if (!dbClaims || dbClaims.length === 0) {
       showNotification("No records exist to process. Please upload files first.", "error");
@@ -392,6 +386,7 @@ const runClaimProcessor = async () => {
       return;
     }
 
+    // Build lookup maps
     const leadsMap = {};
     dbLeads.forEach(l => { 
       const hasArchitect = l.linked_architect && l.linked_architect.toString().trim() !== '';
@@ -416,7 +411,7 @@ const runClaimProcessor = async () => {
     let zeroRates = 0;
     let aggregatedTotalSheets = 0;
 
-    // Process perfectly segmented unique claims
+    // Process claims
     dbClaims.forEach(claim => {
       const claimLeadId = (claim.lead_id || '').toString().trim();
       const matchingLead = leadsMap[claimLeadId];
@@ -441,79 +436,68 @@ const runClaimProcessor = async () => {
         });
         return;
       }
-const leadStatusClean = (matchingLead.lead_status || '').toString().trim().toUpperCase();
+
+      const leadStatusClean = (matchingLead.lead_status || '').toString().trim().toUpperCase();
       if (leadStatusClean === 'LOST') {
         analyticalFlags.push({
           id: claim.claim_no,
           type: 'Lost Lead Exclusion',
           description: `Claim skipped: Associated Lead ID '${claimLeadId}' status is marked as LOST.`
         });
-        return; // This strictly drops the claim and stops further matching
+        return; 
       }
+
       const architectName = (() => {
-        // 1. Grab the raw value from the matched lead record
         const rawArchitect = matchingLead?.linked_architect;
-        
-        // 2. Fallback only if the field is completely null, undefined, or empty spaces
         if (!rawArchitect || rawArchitect.toString().trim() === '') {
           return 'Unmapped / Unknown Architect';
         }
-
-        // 3. Return the complete, unparsed string exactly as it is
         return rawArchitect.toString().trim();
       })();
-const safeClaimDate = (() => {
-  if (!claim || !claim.claim_date) return null; // Safe guard check
-  try {
-    const d = new Date(claim.claim_date);
-    d.setDate(d.getDate() + 1); // Exact 1 day buffer push
-    return d.toISOString().split('T')[0]; // Yields safe "YYYY-MM-DD"
-  } catch (e) {
-    return null;
-  }
-})();
+
+      const safeClaimDate = (() => {
+        if (!claim || !claim.claim_date) return null;
+        try {
+          const d = new Date(claim.claim_date);
+          d.setDate(d.getDate() + 1);
+          return d.toISOString().split('T')[0];
+        } catch (e) {
+          return null;
+        }
+      })();
+
       const leadState = matchingLead?.state ? matchingLead.state.toString().trim() : 'Unknown';
       const leadStatus = matchingLead?.lead_status ? matchingLead.lead_status.toString().trim() : 'Unknown';
       const fileProductCode = (claim.product_code || '').toString().trim();
       let matchKey = aggressiveNormalize(fileProductCode);
-      let unitRatePrice = skuPriceMap[matchKey] || 0;
 
       // =========================================================================
-      // CRITICAL PRICING FIX: INTERCEPT MISSING MATRIX ITEMS
+      // NATURE'S SIGNATURE DIRECT BYPASS & PRICE MATRIX LOOKUP
       // =========================================================================
-      if (unitRatePrice === 0) {
-        // Safe check for Nature's Signature strings, bypassing spaces/underscores
-        if (/NATURE'?S?[\s_]*SIGNATURE/i.test(fileProductCode)) {
-          // A. Try to extract from alternate structural variations inside the existing map keys
-          const dynamicKey = Object.keys(skuPriceMap).find(k => 
-            k.includes('NATURESSIGNATURE') || k.includes('NATURESIGNATURE')
-          );
-          if (dynamicKey) {
-            unitRatePrice = skuPriceMap[dynamicKey];
+      const isNatureSignature = /SIGNATURE|NATURE/i.test(fileProductCode);
+      let unitRatePrice = 0;
+
+      if (isNatureSignature) {
+        // Direct bypass: Do NOT search product_sku_master. Force rate = 0.
+        unitRatePrice = 0;
+      } else {
+        // Standard SKU Matrix lookup
+        unitRatePrice = skuPriceMap[matchKey] || 0;
+
+        // Fallbacks for Doors & Generic Decorative
+        if (unitRatePrice === 0) {
+          if (fileProductCode.toUpperCase().startsWith('FD') || matchKey.startsWith('FD')) {
+            const rootDoor = matchKey.replace(/\d+MM$/i, '') + 'ALLTHICKNESS';
+            if (skuPriceMap[rootDoor]) unitRatePrice = skuPriceMap[rootDoor];
+          } else if (fileProductCode.toUpperCase().startsWith('DECORATIVE') || matchKey.startsWith('DECORATIVE')) {
+            const rootDecor = matchKey.replace(/\d+$/i, '') + 'ALLTHICKNESS';
+            if (skuPriceMap[rootDecor]) unitRatePrice = skuPriceMap[rootDecor];
           }
-          
-          // B. Fall back to standard baseline groupings
-          if (unitRatePrice === 0) {
-            unitRatePrice = skuPriceMap['DECORATIVEALLTHICKNESS'] || skuPriceMap['DECORATIVE'] || 0;
-          }
-          
-          // C. Fail-safe override configuration so the entry is never skipped
-          if (unitRatePrice === 0) {
-            unitRatePrice = 100; // Define your default baseline price replacement value here
-          }
-        } 
-        // Existing Door / Decorative fallback chains
-        else if (fileProductCode.toUpperCase().startsWith('FD') || matchKey.startsWith('FD')) {
-          const rootDoor = matchKey.replace(/\d+MM$/i, '') + 'ALLTHICKNESS';
-          if (skuPriceMap[rootDoor]) unitRatePrice = skuPriceMap[rootDoor];
-        } else if (fileProductCode.toUpperCase().startsWith('DECORATIVE') || matchKey.startsWith('DECORATIVE')) {
-          const rootDecor = matchKey.replace(/\d+$/i, '') + 'ALLTHICKNESS';
-          if (skuPriceMap[rootDecor]) unitRatePrice = skuPriceMap[rootDecor];
         }
       }
-      // =========================================================================
 
-      if (unitRatePrice === 0) {
+      // Drop and flag ONLY if rate is 0 AND it's NOT a Nature's Signature item
+      if (unitRatePrice === 0 && !isNatureSignature) {
         zeroRates++;
         analyticalFlags.push({
           id: claim.claim_no,
@@ -522,9 +506,10 @@ const safeClaimDate = (() => {
         });
         return;
       }
+      // =========================================================================
 
       const eligibleQty = parseFloat(claim.approved_qty || 0);
-      const calculatedPayoutValue = eligibleQty * unitRatePrice;
+      const calculatedPayoutValue = eligibleQty * unitRatePrice; // 0 for Nature's Signature
 
       validMatches++;
       aggregatedTotalSheets += eligibleQty;
@@ -549,8 +534,6 @@ const safeClaimDate = (() => {
       architectGroupAggregation[architectName].money += calculatedPayoutValue;
       architectGroupAggregation[architectName].distinctLeads.add(claimLeadId);
     });
-// Add 1 day and slice to get only YYYY-MM-DD
-// Ensure this is inside dbClaims.forEach(claim => { ... })
 
     const compiledArchitectRows = Object.keys(architectGroupAggregation).map(name => ({
       name: name,
@@ -560,7 +543,7 @@ const safeClaimDate = (() => {
     }));
 
     // ==========================================
-    // DATABASE SYNC (Safe Parallel Chunks)
+    // DATABASE SYNC TO COMMISSION LEDGER
     // ==========================================
     if (calculatedOutputs.length > 0) {
       showNotification(`Syncing ${calculatedOutputs.length} unique settlements into Commission Ledger...`, "info");
@@ -572,12 +555,12 @@ const safeClaimDate = (() => {
           claim_no: row.claim_no,
           lead_id: row.lead_id,
           state: row.state,
-          lead_status:row.lead_status,
+          lead_status: row.lead_status,
           claim_date: row.claim_date,
           product_sku: row.product,
           total_eligible_sheets: row.qty,
-          matrix_rate: row.rate,
-          total_payout_amount: row.payout,
+          matrix_rate: row.rate, // Saves as 0 for Nature's Signature
+          total_payout_amount: row.payout, // Saves as 0 for Nature's Signature
           transaction_timestamp: new Date().toISOString(),
           payout_status: 'Settlement Generated'
         }));
@@ -589,7 +572,6 @@ const safeClaimDate = (() => {
         if (ledgerError) throw ledgerError;
       }
     }
-    // ==========================================
 
     setClaimOutputData(calculatedOutputs);
     setArchitectSummary(compiledArchitectRows);
