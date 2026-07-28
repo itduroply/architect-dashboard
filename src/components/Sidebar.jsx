@@ -211,14 +211,14 @@ export default function Sidebar() {
         )}
          {(isAdmin || isManager) && (
           <>
-            <div className="sb-section" id="sb-sec-admin">Product Eligiblity Section</div>
+            <div className="sb-section" id="sb-sec-admin">Branch Eligiblity Section</div>
             {isAdmin && (
               <div 
                 className={getNavItemClass('peligible')} 
                 id="nav-peligible" 
                 onClick={() => handleNavigation('peligible')}
               >
-                <span className="sb-icon">📋</span> Product Eligibility
+                <span className="sb-icon">📋</span> Branch Eligibility
               </div>
             )}
              
@@ -227,14 +227,14 @@ export default function Sidebar() {
 
           {(isAdmin || isManager) && (
           <>
-            <div className="sb-section" id="sb-sec-admin">Ventura Information Section</div>
+            <div className="sb-section" id="sb-sec-admin">Complete Information Section</div>
             {isAdmin && (
               <div 
                 className={getNavItemClass('ventura')} 
                 id="nav-peligible" 
                 onClick={() => handleNavigation('ventura')}
               >
-                <span className="sb-icon">📈</span> Ventura Data
+                <span className="sb-icon">📈</span> Complete Branch Data
               </div>
             )}
              

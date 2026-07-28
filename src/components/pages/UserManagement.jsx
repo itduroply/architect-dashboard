@@ -208,9 +208,9 @@ export default function UserManagement() {
     setLoading(true);
     setShowUpdateModal(false);
     try {
-      // 1. Invoke hyper-api Edge Function to update email in auth.users
       if (selectedAuthUserId) {
-        const { data: funcData, error: funcError } = await supabase.functions.invoke(
+        // 1. Invoke hyper-api Edge Function to update email in auth.users
+        const { data: emailData, error: emailError } = await supabase.functions.invoke(
           'hyper-api',
           {
             body: {
@@ -221,11 +221,28 @@ export default function UserManagement() {
           }
         );
 
-        if (funcError) throw funcError;
-        if (funcData?.error) throw new Error(funcData.error);
+        if (emailError) throw emailError;
+        if (emailData?.error) throw new Error(emailData.error);
+
+        // 2. Invoke hyper-api Edge Function to update password in auth.users (if provided)
+        if (formData.password && formData.password.trim() !== '') {
+          const { data: passData, error: passError } = await supabase.functions.invoke(
+            'hyper-api',
+            {
+              body: {
+                action: 'UPDATE_PASSWORD',
+                authUserId: selectedAuthUserId,
+                password: formData.password,
+              },
+            }
+          );
+
+          if (passError) throw passError;
+          if (passData?.error) throw new Error(passData.error);
+        }
       }
 
-      // 2. Update user profile details in public.users_profile table
+      // 3. Update user profile details in public.users_profile table
       const { error } = await supabase
         .from('users_profile')
         .update({
@@ -245,10 +262,10 @@ export default function UserManagement() {
 
       await logTelemetry(
         'UPDATE_USER', 
-        `Updated profile for ${formData.name} (ID: ${selectedUserId}): Changed status to ${formData.status}`
+        `Updated profile/credentials for ${formData.name} (ID: ${selectedUserId}): Changed status to ${formData.status}`
       );
 
-      showToast('Profile adjustments updated successfully.', 'success');
+      showToast('Profile and credentials updated successfully.', 'success');
       fetchUsers();
       closeFormModal();
     } catch (error) {
@@ -287,6 +304,7 @@ export default function UserManagement() {
 
       const { error } = await supabase.functions.invoke('hyper-api', {
         body: {
+          action: 'DELETE_USER',
           authUserId: targetUser.auth_user_id
         }
       });
@@ -507,9 +525,16 @@ export default function UserManagement() {
                 <input className="inp" name="mobile" placeholder="Mobile (10 digits)" value={formData.mobile} onChange={handleChange} disabled={loading} />
                 <input className="inp" name="email" type="email" placeholder="Email (@gmail or @duroply)" value={formData.email} onChange={handleChange} disabled={loading} />
                 
-                {!isEditMode && (
-                  <input className="inp" name="password" type="password" placeholder="Account Password" value={formData.password} onChange={handleChange} disabled={loading} style={{ gridColumn: 'span 2' }} />
-                )}
+                <input 
+                  className="inp" 
+                  name="password" 
+                  type="password" 
+                  placeholder={isEditMode ? "New Password (leave blank to keep)" : "Account Password"} 
+                  value={formData.password} 
+                  onChange={handleChange} 
+                  disabled={loading} 
+                  style={{ gridColumn: 'span 2' }} 
+                />
 
                 <select className="inp" name="role" value={formData.role} onChange={handleChange} disabled={loading}>
                   <option value="">Role</option>
