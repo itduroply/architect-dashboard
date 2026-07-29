@@ -22,6 +22,9 @@ const ArchitectAccounts = () => {
   const [architectsList, setArchitectsList] = useState([]);
   const [decorativeMasterList, setDecorativeMasterList] = useState([]);
 
+  // Conversion Percentage Tab State ('7%' for standard, '10%' for Exception)
+  const [conversionTab, setConversionTab] = useState('7%');
+
   // Custom React Modal Confirmation State
   const [modal, setModal] = useState({ show: false, targetStatus: null, displayLabel: '' });
 
@@ -134,7 +137,7 @@ const ArchitectAccounts = () => {
     try {
       const { data, error } = await supabase
         .from('product_sku_master')
-        .select('sku, size, price')
+        .select('sku, size, price, percentage')
         .ilike('code', '%ecorative%');
 
       if (error) throw error;
@@ -147,6 +150,19 @@ const ArchitectAccounts = () => {
   useEffect(() => {
     fetchMasterDecorativeProducts();
   }, []);
+
+  // Helper to test if a product SKU item matches the active conversion tab percentage
+  const matchesConversionTab = (item, tab) => {
+    const percStr = String(item.percentage || '');
+    const skuStr = (item.sku || '').toUpperCase();
+    const sizeStr = (item.size || '').toUpperCase();
+
+    if (tab === '10%') {
+      return percStr.includes('10') || skuStr.includes('10%') || skuStr.includes('10 %') || sizeStr.includes('10%');
+    } else {
+      return percStr.includes('7') || skuStr.includes('7%') || skuStr.includes('7 %') || sizeStr.includes('7%') || (!percStr.includes('10') && !skuStr.includes('10%'));
+    }
+  };
 
   // Architect Detail Summary Fetch & Grouping
   const fetchArchitectSummary = async (architectName) => {
@@ -196,7 +212,7 @@ const ArchitectAccounts = () => {
     }
   };
 
-  // Transfer Nature's Signature Logic
+ // Transfer Nature's Signature Logic with Percentage persistence
   const handleTransferSubmit = async () => {
     const qtyToTransfer = parseFloat(transferState.transferQty);
     if (!qtyToTransfer || qtyToTransfer <= 0) {
@@ -234,8 +250,14 @@ const ArchitectAccounts = () => {
 
       const sourceSkuNormalized = superNormalize(transferState.sourceSku);
 
-      const targetMasterProduct = decorativeMasterList.find(p => superNormalize(p.sku) === superNormalize(transferState.targetSku));
+      // Match target master product filtering by BOTH normalized SKU AND active conversion tab (10% vs 7%)
+      const targetMasterProduct = decorativeMasterList.find(p => 
+        superNormalize(p.sku) === superNormalize(transferState.targetSku) && matchesConversionTab(p, conversionTab)
+      ) || decorativeMasterList.find(p => superNormalize(p.sku) === superNormalize(transferState.targetSku));
+
+      // Extract target rate & percentage
       const targetRate = targetMasterProduct ? parseFloat(targetMasterProduct.price || 0) : 0;
+      const targetPercentage = targetMasterProduct?.percentage || conversionTab; // e.g., '7%' or '10%'
       
       const exactTargetSku = formatSkuForDB(transferState.targetSku);
 
@@ -262,12 +284,14 @@ const ArchitectAccounts = () => {
         const newTargetSheets = parseFloat(existingTargetRow.total_eligible_sheets || 0) + qtyToTransfer;
         const newTargetPayout = newTargetSheets * targetRate;
 
+        // 1. UPDATE existing row in commission_ledger including percentage
         const { error: updateTargetErr } = await supabase
           .from('commission_ledger')
           .update({
             total_eligible_sheets: newTargetSheets,
             matrix_rate: targetRate,
-            total_payout_amount: newTargetPayout
+            total_payout_amount: newTargetPayout,
+            percentage: targetPercentage // 👈 Added percentage column update
           })
           .eq('architect_name', detailsModal.architectName)
           .eq('product_sku', existingTargetRow.product_sku); 
@@ -303,13 +327,15 @@ const ArchitectAccounts = () => {
 
         const newTargetPayout = qtyToTransfer * targetRate;
 
+        // 2. INSERT new row into commission_ledger including percentage
         const newRow = {
           ...templateRow, 
           claim_no: bifurcatedClaimNo, 
           product_sku: exactTargetSku, 
           total_eligible_sheets: qtyToTransfer,
           matrix_rate: targetRate,
-          total_payout_amount: newTargetPayout
+          total_payout_amount: newTargetPayout,
+          percentage: targetPercentage // 👈 Added percentage column insert
         };
         
         delete newRow.id; 
@@ -363,7 +389,7 @@ const ArchitectAccounts = () => {
         }
       }
 
-      showToast(`✅ Successfully transferred ${qtyToTransfer} sheets!`, "success");
+      showToast(`✅ Successfully transferred ${qtyToTransfer} sheets with ${targetPercentage} commission!`, "success");
       setTransferState(prev => ({ ...prev, show: false, transferQty: '', targetSku: '', loading: false }));
       
       if (typeof fetchArchitectSummary === 'function') {
@@ -663,12 +689,13 @@ const ArchitectAccounts = () => {
 
   const uniqueStates = [...new Set(architectsList.map(item => item.state).filter(Boolean))];
 
-  // Target SKUs filtered for Searchable Dropdown
+  // Target SKUs filtered for Searchable Dropdown & Selected Rate Percentage Tab
   const filteredTargetSkus = decorativeMasterList
     .filter(item => {
       const upper = item.sku.toUpperCase();
       return !upper.includes('NATURES SIGNATURE') && !upper.includes('NATURE SIGNATURE');
     })
+    .filter(item => matchesConversionTab(item, conversionTab))
     .filter(item => {
       if (!targetSkuSearch) return true;
       const search = targetSkuSearch.toLowerCase();
@@ -677,8 +704,11 @@ const ArchitectAccounts = () => {
       return skuMatch || sizeMatch;
     });
 
-  // Selected Target Product Rate
-  const selectedTargetProduct = decorativeMasterList.find(p => p.sku === transferState.targetSku);
+  // Selected Target Product Rate (matches both SKU and active conversion tab percentage)
+  const selectedTargetProduct = decorativeMasterList.find(p => 
+    p.sku === transferState.targetSku && matchesConversionTab(p, conversionTab)
+  ) || decorativeMasterList.find(p => p.sku === transferState.targetSku);
+
   const selectedRate = selectedTargetProduct ? parseFloat(selectedTargetProduct.price || 0) : 0;
   const estimatedPayout = (parseFloat(transferState.transferQty || 0) * selectedRate);
 
@@ -775,66 +805,67 @@ const ArchitectAccounts = () => {
                         {Object.entries(data.skus).map(([sku, total], idx) => {
                           const isNaturesSignature = /NATURE'?S?[\s_]*SIGNATURE/i.test(sku || '');
                           return (
-                           <tr key={sku} style={{ borderBottom: idx === Object.keys(data.skus).length - 1 ? 'none' : '1px solid #f1f5f9' }}>
-  <td colSpan={2} style={{ padding: '12px 18px' }}>
-    <div style={{
-      display: 'flex',
-      justify: 'space-between',
-      alignItems: 'center',
-      flexWrap: 'wrap',
-      gap: '12px'
-    }}>
-      
-      {/* Product SKU Name - Wraps automatically to the next line when long */}
-      <div 
-        title={sku}
-        style={{ 
-          flex: '1 1 260px', 
-          color: '#0f172a', 
-          fontWeight: 500,
-          lineHeight: '1.4',
-          wordBreak: 'break-word',
-          overflowWrap: 'anywhere'
-        }}
-      >
-        {sku}
-      </div>
+                            <tr key={sku} style={{ borderBottom: idx === Object.keys(data.skus).length - 1 ? 'none' : '1px solid #f1f5f9' }}>
+                              <td colSpan={2} style={{ padding: '12px 18px' }}>
+                                <div style={{
+                                  display: 'flex',
+                                  justify: 'space-between',
+                                  alignItems: 'center',
+                                  flexWrap: 'wrap',
+                                  gap: '12px'
+                                }}>
+                                  
+                                  {/* Product SKU Name */}
+                                  <div 
+                                    title={sku}
+                                    style={{ 
+                                      flex: '1 1 260px', 
+                                      color: '#0f172a', 
+                                      fontWeight: 500,
+                                      lineHeight: '1.4',
+                                      wordBreak: 'break-word',
+                                      overflowWrap: 'anywhere'
+                                    }}
+                                  >
+                                    {sku}
+                                  </div>
 
-      {/* Sheet Count & Convert Button Container */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexShrink: 0, marginLeft: 'auto' }}>
-        <span style={{ fontWeight: 600, color: '#0f172a', whiteSpace: 'nowrap' }}>
-          {total.toFixed(1)} Sheets
-        </span>
-        
-        {isNaturesSignature && (
-          <button 
-            onClick={() => {
-              setTransferState({
-                show: true,
-                loading: false,
-                sourceSku: sku,
-                maxQty: total,
-                targetSku: '',
-                transferQty: total.toString()
-              });
-              setTargetSkuSearch('');
-              setTargetDropdownOpen(false);
-            }}
-            style={{
-              background: '#0284c7', color: '#ffffff', border: 'none',
-              borderRadius: '6px', padding: '6px 12px', fontSize: '12px', cursor: 'pointer',
-              fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: '5px',
-              boxShadow: '0 2px 4px rgba(2, 132, 199, 0.2)', flexShrink: 0
-            }}
-          >
-            ✏️ Convert Product
-          </button>
-        )}
-      </div>
+                                  {/* Sheet Count & Convert Button Container */}
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexShrink: 0, marginLeft: 'auto' }}>
+                                    <span style={{ fontWeight: 600, color: '#0f172a', whiteSpace: 'nowrap' }}>
+                                      {total.toFixed(1)} Sheets
+                                    </span>
+                                    
+                                    {isNaturesSignature && (
+                                      <button 
+                                        onClick={() => {
+                                          setTransferState({
+                                            show: true,
+                                            loading: false,
+                                            sourceSku: sku,
+                                            maxQty: total,
+                                            targetSku: '',
+                                            transferQty: total.toString()
+                                          });
+                                          setConversionTab('7%');
+                                          setTargetSkuSearch('');
+                                          setTargetDropdownOpen(false);
+                                        }}
+                                        style={{
+                                          background: '#0284c7', color: '#ffffff', border: 'none',
+                                          borderRadius: '6px', padding: '6px 12px', fontSize: '12px', cursor: 'pointer',
+                                          fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: '5px',
+                                          boxShadow: '0 2px 4px rgba(2, 132, 199, 0.2)', flexShrink: 0
+                                        }}
+                                      >
+                                        ✏️ Convert Product
+                                      </button>
+                                    )}
+                                  </div>
 
-    </div>
-  </td>
-</tr>
+                                </div>
+                              </td>
+                            </tr>
                           );
                         })}
                       </tbody>
@@ -897,10 +928,65 @@ const ArchitectAccounts = () => {
               </div>
             </div>
 
+            {/* Percentage Type Switcher Tabs (7% Standard vs 10% Exception) */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+              <label style={{ fontSize: '13px', fontWeight: 600, color: '#334155' }}>
+                Conversion Rate Type <span style={{ color: '#ef4444' }}>*</span>
+              </label>
+              <div style={{ display: 'flex', gap: '10px' }}>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setConversionTab('7%');
+                    setTransferState(prev => ({ ...prev, targetSku: '' }));
+                    setTargetSkuSearch('');
+                  }}
+                  style={{
+                    flex: 1,
+                    padding: '8px 14px',
+                    borderRadius: '8px',
+                    fontSize: '13px',
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                    border: '1.5px solid',
+                    borderColor: conversionTab === '7%' ? '#0284c7' : '#cbd5e1',
+                    background: conversionTab === '7%' ? '#e0f2fe' : '#ffffff',
+                    color: conversionTab === '7%' ? '#0369a1' : '#64748b',
+                    transition: 'all 0.15s ease'
+                  }}
+                >
+                  Standard (7%)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setConversionTab('10%');
+                    setTransferState(prev => ({ ...prev, targetSku: '' }));
+                    setTargetSkuSearch('');
+                  }}
+                  style={{
+                    flex: 1,
+                    padding: '8px 14px',
+                    borderRadius: '8px',
+                    fontSize: '13px',
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                    border: '1.5px solid',
+                    borderColor: conversionTab === '10%' ? '#d97706' : '#cbd5e1',
+                    background: conversionTab === '10%' ? '#fef3c7' : '#ffffff',
+                    color: conversionTab === '10%' ? '#b45309' : '#64748b',
+                    transition: 'all 0.15s ease'
+                  }}
+                >
+                  ⚠️ Exception (10%)
+                </button>
+              </div>
+            </div>
+
             {/* Target SKU Selection with Searchable Combobox */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', position: 'relative' }} ref={dropdownRef}>
               <label style={{ fontSize: '13px', fontWeight: 600, color: '#334155' }}>
-                Search & Select Target Decorative SKU <span style={{ color: '#ef4444' }}>*</span>
+                Search & Select Target Decorative SKU ({conversionTab === '10%' ? '10% Exception' : '7% Standard'}) <span style={{ color: '#ef4444' }}>*</span>
               </label>
 
               {/* Text Search Bar Input */}
@@ -963,12 +1049,12 @@ const ArchitectAccounts = () => {
                 }}>
                   {filteredTargetSkus.length === 0 ? (
                     <div style={{ padding: '14px', textAlign: 'center', color: '#94a3b8', fontSize: '13px' }}>
-                      No matching decorative products found.
+                      No matching decorative products found for {conversionTab === '10%' ? '10%' : '7%'}.
                     </div>
                   ) : (
                     filteredTargetSkus.map((item) => (
                       <div
-                        key={item.sku}
+                        key={`${item.sku}-${item.percentage || ''}`}
                         onClick={() => {
                           setTransferState(prev => ({ ...prev, targetSku: item.sku }));
                           setTargetSkuSearch(item.sku);
@@ -1035,7 +1121,7 @@ const ArchitectAccounts = () => {
               {/* Live Payout Summary Banner */}
               <div style={{ background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: '10px', padding: '12px 14px', display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
                 <span style={{ fontSize: '11px', fontWeight: 600, color: '#166534', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-                  Target Rate & Estimated Payout
+                  Target Rate & Estimated Payout ({conversionTab})
                 </span>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginTop: '4px' }}>
                   <span style={{ fontSize: '12px', color: '#15803d' }}>
@@ -1123,7 +1209,7 @@ const ArchitectAccounts = () => {
 
         <div className="kpi" style={{ border: '1px solid #e8b0b0', padding: '12px 14px', borderRadius: '6px', background: '#fef2f2' }}>
           <div className="kpi-lbl" style={{ fontSize: '11px', color: '#991b1b', textTransform: 'uppercase', fontWeight: 500 }}>❌ Not Eligible</div>
-          <div className="kpi-val" style={{ fontSize: '18px', fontWeight: 700, color: '#dc2626', margin: '4px 0' }}>{kpi.notEligible}</div>
+          <div className="kpi-val" style={{ fontSize: '18px', fontWeight:'700', color: '#dc2626', margin: '4px 0' }}>{kpi.notEligible}</div>
         </div>
 
         <div className="kpi" style={{ border: '1px solid #e5e7eb', padding: '12px 14px', borderRadius: '6px', background: '#fff' }}>

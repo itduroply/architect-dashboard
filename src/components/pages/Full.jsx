@@ -17,6 +17,17 @@ const formatDate = (rawDate) => {
   }
 };
 
+// Helper to extract the core architect name if string contains "ID | Name" format
+const extractCleanName = (rawString) => {
+  if (!rawString) return '';
+  const str = String(rawString).trim();
+  if (str.includes('|')) {
+    const parts = str.split('|');
+    return parts[parts.length - 1].trim(); // Takes 'Rajusharma' from '2511001131 | Rajusharma'
+  }
+  return str;
+};
+
 export default function SupabaseArchitectDashboard() {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedArchitect, setSelectedArchitect] = useState('');
@@ -28,7 +39,7 @@ export default function SupabaseArchitectDashboard() {
   const [allStates, setAllStates] = useState([]);
   const [allStatuses, setAllStatuses] = useState([]);
 
-  // Full master cache from leads_master (Excludes NULL rows)
+  // Full master cache from leads_master
   const [masterLeads, setMasterLeads] = useState([]);
 
   // Profile isolated ledger states
@@ -40,7 +51,7 @@ export default function SupabaseArchitectDashboard() {
   const [filterState, setFilterState] = useState('');
   const [filterLeadStatus, setFilterLeadStatus] = useState('');
 
-  // 1. Initial mount - Load leads_master and join commission_ledger upfront for claim dates
+  // 1. Initial mount - Load leads_master and join commission_ledger upfront
   useEffect(() => {
     const fetchMasterData = async () => {
       try {
@@ -51,14 +62,12 @@ export default function SupabaseArchitectDashboard() {
 
         if (leadsErr) throw leadsErr;
 
-        // Fetch commission records upfront to match claim dates globally
         const { data: commissions, error: commErr } = await supabase
           .from('commission_ledger')
           .select('*');
 
         if (commErr) console.warn("Commission ledger fetch warning:", commErr.message);
 
-        // Map commissions by lead_id string
         const commMap = {};
         (commissions || []).forEach(c => {
           const key = String(c.lead_id).trim();
@@ -111,23 +120,54 @@ export default function SupabaseArchitectDashboard() {
     fetchMasterData();
   }, []);
 
-  // 2. Query individual ledger records when an explicit profile selection locks in
+  // 2. Fetch Paid Remittances total matching typing or explicit selection
+  useEffect(() => {
+    const fetchRemittanceData = async () => {
+      const activeRawInput = (selectedArchitect || searchQuery).trim();
+      if (!activeRawInput) {
+        setRemittanceTotal(0);
+        return;
+      }
+
+      // Extract clean name (e.g., 'Rajusharma' from '2511001131 | Rajusharma')
+      const cleanName = extractCleanName(activeRawInput);
+
+      try {
+        const { data: remittanceData, error: remittancesErr } = await supabase
+          .from('remittances')
+          .select('amount')
+          .ilike('architect_name', `%${cleanName}%`)
+          .eq('status', 'Paid');
+
+        if (remittancesErr) throw remittancesErr;
+
+        const totalPaidRemittance = (remittanceData || []).reduce(
+          (sum, item) => sum + (Number(item.amount) || 0),
+          0
+        );
+        setRemittanceTotal(totalPaidRemittance);
+      } catch (err) {
+        console.error("Remittances fetch error:", err.message);
+        setRemittanceTotal(0);
+      }
+    };
+
+    fetchRemittanceData();
+  }, [searchQuery, selectedArchitect]);
+
+  // 3. Robust case-insensitive fetch for individual architect records
   const fetchDashboardData = async (architectName) => {
     setLoading(true);
     try {
-      const leads = masterLeads.filter(item => item.linked_architect?.trim() === architectName);
+      const targetClean = extractCleanName(architectName).toLowerCase();
+
+      // Case-insensitive & flexible matching against masterLeads
+      const leads = masterLeads.filter(item => {
+        const leadArch = (item.linked_architect || '').toLowerCase();
+        return leadArch.includes(targetClean) || targetClean.includes(leadArch);
+      });
+
       setLeadsData(leads);
-
-      const { data: remittanceData, error: remittancesErr } = await supabase
-        .from('remittances')
-        .select('amount')
-        .ilike('architect_name', architectName)
-        .eq('status', 'Paid');
-
-      if (remittancesErr) throw remittancesErr;
-
-      const totalPaidRemittance = (remittanceData || []).reduce((sum, item) => sum + (item.amount || 0), 0);
-      setRemittanceTotal(totalPaidRemittance);
 
       if (leads.length > 0) {
         const leadIds = leads.map(l => l.lead_id);
@@ -148,23 +188,26 @@ export default function SupabaseArchitectDashboard() {
     }
   };
 
-  // 3. Auto-predictive suggestions engine
+  // 4. Auto-predictive suggestions engine
   const suggestions = useMemo(() => {
-    if (!searchQuery) return [];
+    if (!searchQuery.trim()) return [];
+    const query = searchQuery.toLowerCase().trim();
     return allArchitects.filter(name =>
-      name.toLowerCase().includes(searchQuery.toLowerCase())
+      name.toLowerCase().includes(query)
     );
   }, [searchQuery, allArchitects]);
 
+  // Selection handler cleanly updates states & closes focus
   const handleSelectArchitect = (name) => {
     setSelectedArchitect(name);
     setSearchQuery(name);
+    setIsFocused(false);
     setFilterState('');
     setFilterLeadStatus('');
     fetchDashboardData(name);
   };
 
-  // 4. Unified Data Engine
+  // 5. Unified Data Engine
   const compiledData = useMemo(() => {
     if (selectedArchitect) {
       const records = [];
@@ -203,9 +246,11 @@ export default function SupabaseArchitectDashboard() {
       });
       return records;
     } else {
+      const searchClean = extractCleanName(searchQuery).toLowerCase();
       return masterLeads.filter(item => {
+        const archName = (item.linked_architect || '').toLowerCase();
         const matchesSearch = searchQuery 
-          ? item.linked_architect?.toLowerCase().includes(searchQuery.toLowerCase()) 
+          ? archName.includes(searchClean) 
           : true;
         const matchesState = filterState ? item.state === filterState : true;
         const matchesStatus = filterLeadStatus ? item.lead_status === filterLeadStatus : true;
@@ -214,7 +259,7 @@ export default function SupabaseArchitectDashboard() {
     }
   }, [selectedArchitect, leadsData, commissionData, masterLeads, searchQuery, filterState, filterLeadStatus]);
 
-  // 5. Total Calculation Accumulator
+  // 6. Total Calculation Accumulator
   const kpiTotals = useMemo(() => {
     if (!selectedArchitect) return { sheets: 0, payout: 0 };
     return compiledData.reduce((acc, curr) => {
@@ -226,7 +271,7 @@ export default function SupabaseArchitectDashboard() {
 
   const hasActiveFilters = filterState || filterLeadStatus || searchQuery.trim().length > 0;
   const shouldShowContent = selectedArchitect || hasActiveFilters;
-  const shouldShowKPIs = selectedArchitect && commissionData.length > 0;
+  const shouldShowKPIs = Boolean(selectedArchitect || searchQuery.trim().length > 0);
 
   return (
     <div style={styles.dashboardContainer}>
@@ -253,13 +298,11 @@ export default function SupabaseArchitectDashboard() {
               placeholder="Type to filter architect profiles..."
               value={searchQuery}
               onFocus={() => setIsFocused(true)}
-              onBlur={() => setTimeout(() => setIsFocused(false), 250)}
+              onBlur={() => setTimeout(() => setIsFocused(false), 200)}
               onChange={(e) => {
-                setSearchQuery(e.target.value);
-                const trimmedValue = e.target.value.trim();
-                if (allArchitects.includes(trimmedValue)) {
-                  handleSelectArchitect(trimmedValue);
-                } else if (e.target.value === '') {
+                const val = e.target.value;
+                setSearchQuery(val);
+                if (val === '') {
                   setSelectedArchitect('');
                 }
               }}
@@ -271,7 +314,10 @@ export default function SupabaseArchitectDashboard() {
                 {suggestions.map((name, idx) => (
                   <div
                     key={idx}
-                    onMouseDown={() => handleSelectArchitect(name)}
+                    onMouseDown={(e) => {
+                      e.preventDefault(); // Prevents input blur before click registers
+                      handleSelectArchitect(name);
+                    }}
                     style={styles.suggestionItem}
                   >
                     {name}

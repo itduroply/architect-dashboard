@@ -1,12 +1,11 @@
 import React, { useState, useEffect, useRef } from "react";
-import { useLocation } from "react-router-dom"; // ✅ Integrated without breaking existing structure
+import { useLocation } from "react-router-dom";
 import * as XLSX from "xlsx";
-// Configured to point directly to your relative path setup
 import { supabase } from "../../lib/supbase";
 
 const MasterDataPage = ({ exportMasterData }) => {
   const fileInputRef = useRef(null);
-  const location = useLocation(); // ✅ Hook initialized safely
+  const location = useLocation();
 
   // --- State Architecture ---
   const [tableData, setTableData] = useState([]);
@@ -26,16 +25,15 @@ const MasterDataPage = ({ exportMasterData }) => {
     setSnackbar({ show: true, message, type });
     setTimeout(() => {
       setSnackbar({ show: false, message: "", type: "success" });
-    }, 4000); // Automatically disappears after 4 seconds
+    }, 4000);
   };
 
-  // --- 📝 Telemetry Logging Engine (Updated with Strict UUID & Role Configs) ---
+  // --- Telemetry Logging Engine ---
   const logTelemetry = async (actionType, description) => {
     try {
-      const activeId = localStorage.getItem('auth_uid'); // ✅ Uses the strict 36-char string UUID layout
+      const activeId = localStorage.getItem('auth_uid');
       const activeRole = localStorage.getItem('user_role') || 'User';
 
-      // Capturing explicit errors returned from Supabase to prevent silent rejections
       const { error } = await supabase.from('user_activity_logs').insert({
         user_id: activeId, 
         user_role: activeRole,
@@ -92,11 +90,9 @@ const MasterDataPage = ({ exportMasterData }) => {
 
   // --- Export Engine ---
   const handleExportMasterData = async () => {
-    // Determine the acting user's profile context name seamlessly
     const currentActorName = location.state?.userProfile?.name || localStorage.getItem("user_role") || "Admin";
 
     if (exportMasterData) {
-      // ✅ Await telemetry logging first so it completes safely before the parent layout can unmount
       await logTelemetry("EXPORT_MASTER_DATA", `Master data file exported via custom layout configurations by ${currentActorName}.`);
       exportMasterData();
       return;
@@ -114,6 +110,7 @@ const MasterDataPage = ({ exportMasterData }) => {
         "SKU": row.sku,
         "Size": row.size,
         "Price": row.price,
+        "Percentage": row.percentage || "—", // ✅ Mapped percentage field to export
       }));
 
       const worksheet = XLSX.utils.json_to_sheet(exportRows);
@@ -121,7 +118,6 @@ const MasterDataPage = ({ exportMasterData }) => {
       XLSX.utils.book_append_sheet(workbook, worksheet, "Master Data");
       XLSX.writeFile(workbook, "Product_SKU_Master_List_2026-27.xlsx");
       
-      // ✅ Background activity logged asynchronously and awaited safely
       await logTelemetry("EXPORT_MASTER_DATA", `Master configuration sheets successfully requested and downloaded by ${currentActorName}.`);
       
       showToast("Master spreadsheet exported successfully!");
@@ -135,7 +131,7 @@ const MasterDataPage = ({ exportMasterData }) => {
     fileInputRef.current.click();
   };
 
-  const handleFileChange = (event) => {
+const handleFileChange = (event) => {
     const file = event.target.files[0];
     if (!file) return;
 
@@ -144,7 +140,7 @@ const MasterDataPage = ({ exportMasterData }) => {
 
     reader.onload = async (e) => {
       try {
-        // Fallback checks prioritize router parameter definitions dynamically
+        // Retrieve dynamic username context safely
         let currentUserName = location.state?.userProfile?.name || "Admin";
         const activeId = localStorage.getItem("auth_uid");
 
@@ -175,46 +171,78 @@ const MasterDataPage = ({ exportMasterData }) => {
           throw new Error("The selected file is empty.");
         }
 
-        // Find the actual header index by searching down past empty banners/titles
+        // Find the column header row dynamically
         let headerRowIndex = -1;
         for (let i = 0; i < rawRows.length; i++) {
-          const processedHeaders = rawRows[i].map(h => h?.toString().trim().toLowerCase() || "");
-          if (processedHeaders.includes("sku") && (processedHeaders.includes("code") || processedHeaders.includes("item code"))) {
+          const processedHeaders = rawRows[i].map(
+            (h) => h?.toString().trim().toLowerCase() || ""
+          );
+          if (
+            processedHeaders.includes("sku") &&
+            (processedHeaders.includes("code") || processedHeaders.includes("item code"))
+          ) {
             headerRowIndex = i;
             break;
           }
         }
 
         if (headerRowIndex === -1) {
-          throw new Error("Could not find column header row. Ensure 'SKU' and 'Code' columns are present.");
+          throw new Error(
+            "Could not find column header row. Ensure 'SKU' and 'Code' columns are present."
+          );
         }
 
-        // Map correct header indexes from the row we found
-        const fileHeaders = rawRows[headerRowIndex].map((h) =>
-          h?.toString().trim().toLowerCase() || ""
+        const fileHeaders = rawRows[headerRowIndex].map(
+          (h) => h?.toString().trim().toLowerCase() || ""
         );
 
         const payload = [];
 
-        // Start reading data directly below the detected header row
+        // Parse data rows below the header
         for (let i = headerRowIndex + 1; i < rawRows.length; i++) {
           const row = rawRows[i];
           if (!row || row.every((cell) => cell === null || cell === "")) continue;
 
           const getValue = (possibleNames) => {
             const index = fileHeaders.findIndex((h) => possibleNames.includes(h));
-            return (index !== -1 && row[index] !== undefined) ? row[index] : null;
+            return index !== -1 && row[index] !== undefined ? row[index] : null;
           };
 
           const rawPriceVal = getValue(["price", "rate", "amount"]);
-          const sanitizedPriceStr = rawPriceVal !== null ? rawPriceVal.toString().replace(/[^0-9.]/g, "") : "0";
+          const sanitizedPriceStr =
+            rawPriceVal !== null ? rawPriceVal.toString().replace(/[^0-9.]/g, "") : "0";
           const finalPriceNum = parseFloat(sanitizedPriceStr) || 0;
 
           const rawCode = getValue(["code", "item code"]);
           const rawSku = getValue(["sku", "sku name", "item description"]);
           const rawSize = getValue(["size", "thickness"]);
 
-          // Skip empty placeholder/spacer lines within rows
+          // ✅ Extract & Format Percentage
+          const rawPercentage = getValue([
+            "percentage",
+            "percent",
+            "payout %",
+            "payout%",
+            "%",
+            "discount %",
+          ]);
+
+          let formattedPercentage = null;
+          if (
+            rawPercentage !== null &&
+            rawPercentage !== undefined &&
+            rawPercentage !== ""
+          ) {
+            if (typeof rawPercentage === "number") {
+              formattedPercentage =
+                rawPercentage < 1
+                  ? `${Math.round(rawPercentage * 100)}%`
+                  : `${rawPercentage}%`;
+            } else {
+              formattedPercentage = rawPercentage.toString().trim();
+            }
+          }
+
           if (!rawSku || !rawCode) continue;
 
           const mappedRow = {
@@ -224,9 +252,10 @@ const MasterDataPage = ({ exportMasterData }) => {
               .toUpperCase(),
             code: rawCode.toString().trim(),
             sku: rawSku.toString().trim(),
-            size: rawSize ? rawSize.toString().trim() : "—", 
+            size: rawSize ? rawSize.toString().trim() : "—",
             price: finalPriceNum,
-            updated_by: currentUserName, 
+            percentage: formattedPercentage, // ✅ Map percentage directly to DB column
+            updated_by: currentUserName,
           };
 
           payload.push(mappedRow);
@@ -236,15 +265,18 @@ const MasterDataPage = ({ exportMasterData }) => {
           throw new Error("No structured product entries parsed from data rows.");
         }
 
-        // Performs update if conflict matches table unique definitions
+        // ✅ Perform Upsert with composite conflict resolution
         const { error } = await supabase
           .from("product_sku_master")
-          .upsert(payload, { onConflict: "code,sku,size" });
+          .upsert(payload, { onConflict: "code,sku,size,percentage" });
 
         if (error) throw error;
 
-        // ✅ Logs activity trace securely with target username details
-        await logTelemetry("UPLOAD_MASTER_DATA", `Product SKU dataset synced. Processed ${payload.length} rows successfully by ${currentUserName}.`);
+        // Telemetry Logging
+        await logTelemetry(
+          "UPLOAD_MASTER_DATA",
+          `Product SKU dataset synced. Processed ${payload.length} rows successfully by ${currentUserName}.`
+        );
 
         showToast(`Data uploaded successfully! Synced ${payload.length} master rows.`);
         await fetchMasterData();
@@ -277,7 +309,6 @@ const MasterDataPage = ({ exportMasterData }) => {
 
       if (error) throw error;
 
-      // ✅ Telemetry tracking for critical table truncation adjustments
       await logTelemetry("RESET_MASTER_DATA", `Product SKU Master list structural points table was reset and wiped entirely by ${currentActorName}.`);
 
       setTableData([]);
@@ -293,25 +324,24 @@ const MasterDataPage = ({ exportMasterData }) => {
     }
   };
 
- const filteredData = tableData.filter((row) => {
-  const matchesSearch =
-    row.sku?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    row.group?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    row.code?.toLowerCase().includes(searchQuery.toLowerCase());
+  const filteredData = tableData.filter((row) => {
+    const matchesSearch =
+      row.sku?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      row.group?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      row.code?.toLowerCase().includes(searchQuery.toLowerCase());
 
-  // Normalize both sides: convert to lowercase and remove all spaces
-  const rowGroupNormalized = row.group?.toLowerCase().replace(/\s+/g, '');
-  const filterGroupNormalized = groupFilter?.toLowerCase().replace(/\s+/g, '');
+    const rowGroupNormalized = row.group?.toLowerCase().replace(/\s+/g, '');
+    const filterGroupNormalized = groupFilter?.toLowerCase().replace(/\s+/g, '');
 
-  const matchesGroup = groupFilter === "" || rowGroupNormalized === filterGroupNormalized;
-  
-  return matchesSearch && matchesGroup;
-});
+    const matchesGroup = groupFilter === "" || rowGroupNormalized === filterGroupNormalized;
+    
+    return matchesSearch && matchesGroup;
+  });
 
   return (
     <div className="page" id="page-master" style={{ position: "relative" }}>
       
-      {/* Dynamic Modal Overlay Engine */}
+      {/* Modal Overlay Engine */}
       {showResetModal && (
         <div
           style={{
@@ -405,7 +435,7 @@ const MasterDataPage = ({ exportMasterData }) => {
         </div>
       )}
 
-      {/* Hidden native system file selector */}
+      {/* Hidden file input */}
       <input
         type="file"
         ref={fileInputRef}
@@ -414,7 +444,7 @@ const MasterDataPage = ({ exportMasterData }) => {
         onChange={handleFileChange}
       />
 
-      {/* Admin-only notice banner */}
+      {/* Admin Notice Banner */}
       <div
         style={{
           background: "#fdf5e0",
@@ -441,7 +471,7 @@ const MasterDataPage = ({ exportMasterData }) => {
         </div>
       </div>
 
-      {/* Formula callout */}
+      {/* Formula Callout */}
       <div
         style={{
           background: "#e8f7ef",
@@ -471,7 +501,7 @@ const MasterDataPage = ({ exportMasterData }) => {
             <div>
               <div className="card-title">Tier-wise Amount Master (Point Table 2026–27)</div>
               <div className="card-sub">
-                GROUP · CODE · SKU · Size · Price — admin upload only · auto pre-loaded from uploaded file
+                GROUP · CODE · SKU · Size · Price · Percentage — admin upload only · auto pre-loaded from uploaded file
               </div>
             </div>
           </div>
@@ -547,7 +577,7 @@ const MasterDataPage = ({ exportMasterData }) => {
           </span>
         </div>
 
-        {/* Responsive Table Wrapper */}
+        {/* Table View */}
         <div style={{ padding: "14px 20px" }}>
           <div className="tbl-wrap" style={{ maxHeight: "480px", overflowY: "auto" }}>
             {filteredData.length === 0 ? (
@@ -564,6 +594,7 @@ const MasterDataPage = ({ exportMasterData }) => {
                     <th style={{ padding: "10px" }}>SKU</th>
                     <th style={{ padding: "10px" }}>SIZE</th>
                     <th style={{ padding: "10px" }}>PRICE</th>
+                    <th style={{ padding: "10px" }}>PERCENTAGE</th> {/* ✅ Added PERCENTAGE header */}
                   </tr>
                 </thead>
                 <tbody>
@@ -575,6 +606,7 @@ const MasterDataPage = ({ exportMasterData }) => {
                       <td style={{ padding: "10px" }}><strong>{row.sku}</strong></td>
                       <td style={{ padding: "10px" }}>{row.size || "—"}</td>
                       <td style={{ padding: "10px" }}>₹{row.price}</td>
+                      <td style={{ padding: "10px" }}>{row.percentage || "—"}</td> {/* ✅ Display percentage */}
                     </tr>
                   ))}
                 </tbody>
@@ -584,7 +616,7 @@ const MasterDataPage = ({ exportMasterData }) => {
         </div>
       </div>
 
-      {/* ✅ High z-index notification layers */}
+      {/* Toast Notifications */}
       {snackbar.show && (
         <div
           style={{

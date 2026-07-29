@@ -1233,11 +1233,11 @@ export default function ArchitectDashboard() {
           </div>
           <div className="header-actions">
             <button onClick={exportAllToExcel} className="btn-action btn-excel" title="Export All Data to Excel with Clickable Image Links">
-              <IconDownload /> Export Excel
+              <IconDownload /> Export Excel With Bill
             </button>
             {/* ADDITION 2: BUTTON FOR EXPORTING EXCEL WITHOUT IMAGES */}
             <button onClick={exportToExcelWithoutImages} className="btn-action btn-excel-no-img" title="Export Data to Excel without Image links">
-              <IconDownload /> Export Excel (Text Only)
+              <IconDownload /> Export Sales Data
             </button>
             <button 
               onClick={exportAllBillsToPDF} 
