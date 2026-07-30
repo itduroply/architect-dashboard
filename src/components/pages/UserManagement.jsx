@@ -1,6 +1,26 @@
+// UserManagement.jsx
+
 import React, { useState, useEffect, useCallback } from 'react'; 
 import { supabase } from '../../lib/supbase'; 
 import { useLocation } from 'react-router-dom';
+
+// Master List of Available Sidebar Navigation Items
+const SIDEBAR_OPTIONS = [
+  { id: 'dashboard', label: '📊 Dashboard', group: 'Main' },
+  { id: 'users', label: '👥 User Management', group: 'Admin Panel' },
+  { id: 'master', label: '🗄️ Master Config', group: 'Admin Panel' },
+  { id: 'history', label: '🗂️ Upload History', group: 'Admin Panel' },
+  { id: 'full', label: 'ℹ️ Complete Data Access', group: 'Admin Panel' },
+  { id: 'query', label: '❓ Get Query', group: 'Query Section' },
+  { id: 'peligible', label: '📋 Branch Eligibility', group: 'Branch Eligibility' },
+  { id: 'ventura', label: '📈 Complete Branch Data', group: 'Complete Information' },
+  { id: 'accounts', label: '👛 Architect Accounts', group: 'Accounts' },
+  { id: 'pan-architect', label: '🌐 Pan Architect', group: 'Accounts' },
+  { id: 'payout', label: '💰 Payout Request', group: 'Accounts' },
+  { id: 'remittance', label: '💳 Remittance Entry', group: 'Accounts' },
+  { id: 'claims', label: '🔗 Claim Processor', group: 'Accounts' },
+  { id: 'commission', label: '🪙 Qualified Architect Split', group: 'Accounts' },
+];
 
 export default function UserManagement() {
   const location = useLocation();
@@ -30,7 +50,8 @@ export default function UserManagement() {
     department: '',
     designation: '',
     branch: '',
-    status: 'active'
+    status: 'active',
+    allowed_permissions: ['dashboard'] // Default permission
   });
 
   const showToast = (message, type = 'success') => {
@@ -38,7 +59,6 @@ export default function UserManagement() {
     setTimeout(() => setToast({ show: false, message: '', type: 'success' }), 4000);
   };
 
-  // Dynamic Telemetry Core Logging Engine
   const logTelemetry = async (actionType, description) => {
     try {
       const activeId = localStorage.getItem('auth_uid');
@@ -67,7 +87,7 @@ export default function UserManagement() {
     try {
       const { data, error } = await supabase
         .from('users_profile')
-        .select('id, auth_user_id, name, username, mobile, role, branch, status, department, designation, email');
+        .select('id, auth_user_id, name, username, mobile, role, branch, status, department, designation, email, allowed_permissions');
 
       if (error) throw error;
       setUsers(data || []);
@@ -83,10 +103,49 @@ export default function UserManagement() {
   }, [fetchUsers]);
 
   const handleChange = (e) => {
-    setFormData({
-      ...formData,
-      [e.target.name]: e.target.value
+    const { name, value } = e.target;
+    
+    // Automatically select all permissions if role is changed to Administrator
+    if (name === 'role' && (value === 'administrator' || value === 'admin')) {
+      setFormData(prev => ({
+        ...prev,
+        role: value,
+        allowed_permissions: SIDEBAR_OPTIONS.map(opt => opt.id)
+      }));
+      return;
+    }
+
+    setFormData(prev => ({
+      ...prev,
+      [name]: value
+    }));
+  };
+
+  // Toggle individual sidebar checkbox permission
+  const handlePermissionToggle = (permissionId) => {
+    setFormData(prev => {
+      const current = prev.allowed_permissions || [];
+      const updated = current.includes(permissionId)
+        ? current.filter(id => id !== permissionId)
+        : [...current, permissionId];
+      
+      return { ...prev, allowed_permissions: updated };
     });
+  };
+
+  // Helper toggle buttons: Select All / Clear All
+  const handleSelectAllPermissions = () => {
+    setFormData(prev => ({
+      ...prev,
+      allowed_permissions: SIDEBAR_OPTIONS.map(opt => opt.id)
+    }));
+  };
+
+  const handleClearAllPermissions = () => {
+    setFormData(prev => ({
+      ...prev,
+      allowed_permissions: ['dashboard']
+    }));
   };
 
   const validateForm = (checkingUpdate = false) => {
@@ -122,6 +181,10 @@ export default function UserManagement() {
     setSelectedUserId(user.id);
     setSelectedAuthUserId(user.auth_user_id);
     setIsEditMode(true);
+
+    const userRole = (user.role || '').toLowerCase();
+    const isAdminRole = userRole === 'admin' || userRole === 'administrator';
+
     setFormData({
       name: user.name || '',
       username: user.username || '',
@@ -132,7 +195,10 @@ export default function UserManagement() {
       department: user.department || '',
       designation: user.designation || '',
       branch: user.branch || '',
-      status: user.status || 'active'
+      status: user.status || 'active',
+      allowed_permissions: isAdminRole 
+        ? SIDEBAR_OPTIONS.map(opt => opt.id) 
+        : (user.allowed_permissions || ['dashboard'])
     });
     setShowModal(true);
   };
@@ -186,7 +252,8 @@ export default function UserManagement() {
             department: formData.department,
             designation: formData.designation,
             branch: formData.branch,
-            status: formData.status
+            status: formData.status,
+            allowed_permissions: formData.allowed_permissions
           }
         ]);
 
@@ -194,7 +261,7 @@ export default function UserManagement() {
 
       await logTelemetry('CREATE_USER', `Created new user profile: ${formData.name} (${formData.email}) with role ${formData.role}`);
 
-      showToast('User account compiled and integrated successfully!', 'success');
+      showToast('User account created and permissions assigned successfully!', 'success');
       fetchUsers();
       closeFormModal();
     } catch (error) {
@@ -209,7 +276,6 @@ export default function UserManagement() {
     setShowUpdateModal(false);
     try {
       if (selectedAuthUserId) {
-        // 1. Invoke hyper-api Edge Function to update email in auth.users
         const { data: emailData, error: emailError } = await supabase.functions.invoke(
           'hyper-api',
           {
@@ -224,7 +290,6 @@ export default function UserManagement() {
         if (emailError) throw emailError;
         if (emailData?.error) throw new Error(emailData.error);
 
-        // 2. Invoke hyper-api Edge Function to update password in auth.users (if provided)
         if (formData.password && formData.password.trim() !== '') {
           const { data: passData, error: passError } = await supabase.functions.invoke(
             'hyper-api',
@@ -242,7 +307,6 @@ export default function UserManagement() {
         }
       }
 
-      // 3. Update user profile details in public.users_profile table
       const { error } = await supabase
         .from('users_profile')
         .update({
@@ -254,7 +318,8 @@ export default function UserManagement() {
           department: formData.department,
           designation: formData.designation,
           branch: formData.branch,
-          status: formData.status
+          status: formData.status,
+          allowed_permissions: formData.allowed_permissions
         })
         .eq('id', selectedUserId);
 
@@ -262,10 +327,10 @@ export default function UserManagement() {
 
       await logTelemetry(
         'UPDATE_USER', 
-        `Updated profile/credentials for ${formData.name} (ID: ${selectedUserId}): Changed status to ${formData.status}`
+        `Updated profile/permissions for ${formData.name} (ID: ${selectedUserId})`
       );
 
-      showToast('Profile and credentials updated successfully.', 'success');
+      showToast('Profile and sidebar permissions updated successfully.', 'success');
       fetchUsers();
       closeFormModal();
     } catch (error) {
@@ -344,7 +409,8 @@ export default function UserManagement() {
       department: '',
       designation: '',
       branch: '',
-      status: 'active'
+      status: 'active',
+      allowed_permissions: ['dashboard']
     });
     setIsEditMode(false);
     setSelectedUserId(null);
@@ -366,7 +432,7 @@ export default function UserManagement() {
             <div>
               <div className="card-title">User Management</div>
               <div className="card-sub">
-                Create accounts and manage access to the Design Partner+ program
+                Create accounts and manage sidebar access to the Design Partner+ program
               </div>
             </div>
 
@@ -382,7 +448,15 @@ export default function UserManagement() {
 
               <button
                 className="btn btn-gold"
-                onClick={() => { setIsEditMode(false); setShowModal(true); }}
+                onClick={() => { 
+                  setIsEditMode(false); 
+                  setFormData({
+                    name: '', username: '', mobile: '', email: '', password: '', role: '',
+                    department: '', designation: '', branch: '', status: 'active',
+                    allowed_permissions: ['dashboard']
+                  });
+                  setShowModal(true); 
+                }}
               >
                 + Add User
               </button>
@@ -397,13 +471,13 @@ export default function UserManagement() {
             flexWrap: 'wrap'
           }}>
             <div style={{ fontSize: '11px', color: 'var(--dim)', display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <span className="badge b-admin" style={{ padding: '4px 10px', borderRadius: '20px', background: '#fee2e2', color: '#dc2626', fontWeight: 600 }}>Administrator</span> Full access · manage users · all reports
+              <span className="badge b-admin" style={{ padding: '4px 10px', borderRadius: '20px', background: '#fee2e2', color: '#dc2626', fontWeight: 600 }}>Administrator</span> Full system access · all permissions
             </div>
             <div style={{ fontSize: '11px', color: 'var(--dim)', display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <span className="badge b-manager" style={{ padding: '4px 10px', borderRadius: '20px', background: '#dbeafe', color: '#2563eb', fontWeight: 600 }}>Manager</span> Upload data · commission tool · dashboard
+              <span className="badge b-manager" style={{ padding: '4px 10px', borderRadius: '20px', background: '#dbeafe', color: '#2563eb', fontWeight: 600 }}>Manager / Custom</span> Custom checked sidebar access
             </div>
             <div style={{ fontSize: '11px', color: 'var(--dim)', display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <span className="badge b-viewer" style={{ padding: '4px 10px', borderRadius: '20px', background: '#f3f4f6', color: '#4b5563', fontWeight: 600 }}>Viewer</span> Dashboard & leaderboard view only
+              <span className="badge b-viewer" style={{ padding: '4px 10px', borderRadius: '20px', background: '#f3f4f6', color: '#4b5563', fontWeight: 600 }}>Viewer</span> Custom view permissions
             </div>
           </div>
 
@@ -427,6 +501,7 @@ export default function UserManagement() {
                       <th style={{ padding: '10px' }}>Mobile</th>
                       <th style={{ padding: '10px' }}>Role</th>
                       <th style={{ padding: '10px' }}>Branch</th>
+                      <th style={{ padding: '10px' }}>Sidebar Modules</th>
                       <th style={{ padding: '10px' }}>Status</th>
                       <th style={{ padding: '10px', textAlign: 'center' }}>Actions</th>
                     </tr>
@@ -435,12 +510,12 @@ export default function UserManagement() {
                     {filteredUsers.map((user) => {
                       let roleStyle = { background: '#f3f4f6', color: '#4b5563' }; 
                       const cleanRole = (user.role || '').toLowerCase();
-                      if (cleanRole === 'administrator' || cleanRole === 'admin') {
+                      const isAdmin = cleanRole === 'administrator' || cleanRole === 'admin';
+
+                      if (isAdmin) {
                         roleStyle = { background: '#fee2e2', color: '#dc2626' }; 
                       } else if (cleanRole === 'manager') {
                         roleStyle = { background: '#dbeafe', color: '#2563eb' }; 
-                      } else if (cleanRole === 'viewer') {
-                        roleStyle = { background: '#e5e7eb', color: '#4b5563' }; 
                       }
 
                       const isActive = (user.status || '').toLowerCase() === 'active';
@@ -448,11 +523,15 @@ export default function UserManagement() {
                         ? { background: '#dcfce7', color: '#16a34a' } 
                         : { background: '#fef3c7', color: '#d97706' }; 
 
+                      const permittedCount = isAdmin 
+                        ? SIDEBAR_OPTIONS.length 
+                        : (user.allowed_permissions || []).length;
+
                       return (
                         <tr key={user.id} style={{ borderBottom: '1px solid #e9e1d2' }}>
                           <td style={{ padding: '12px 10px', color: '#6f6457' }}>{user.id}</td>
                           <td style={{ padding: '12px 10px', fontWeight: 500 }}>{user.name || '—'}</td>
-                          <td style={{ padding: '12px 10px' }}>@{user.username || '—'}</td>
+                          <td style={{ padding: '12px 10px' }}>{user.username || '—'}</td>
                           <td style={{ padding: '12px 10px' }}>{user.mobile || '—'}</td>
                           <td style={{ padding: '12px 10px' }}>
                             <span style={{ 
@@ -468,6 +547,11 @@ export default function UserManagement() {
                             </span>
                           </td>
                           <td style={{ padding: '12px 10px', textTransform: 'capitalize' }}>{user.branch || '—'}</td>
+                          <td style={{ padding: '12px 10px' }}>
+                            <span style={{ fontSize: '12px', fontWeight: 600, color: '#1a1510' }}>
+                              {permittedCount} / {SIDEBAR_OPTIONS.length} options
+                            </span>
+                          </td>
                           <td style={{ padding: '12px 10px' }}>
                             <span style={{ 
                               padding: '3px 10px', 
@@ -486,7 +570,7 @@ export default function UserManagement() {
                               <button 
                                 onClick={() => handleEditClick(user)}
                                 style={{ background: 'transparent', border: 'none', cursor: 'pointer', fontSize: '15px' }}
-                                title="Edit User"
+                                title="Edit User & Permissions"
                               >
                                 ✏️
                               </button>
@@ -510,16 +594,20 @@ export default function UserManagement() {
         </div>
       </div>
 
+      {/* ADD / EDIT USER MODAL WITH PERMISSION CHECKBOXES */}
       {showModal && (
         <div style={{ position: 'fixed', top: 0, left: 0, width: '100%', height: '100%', background: 'rgba(26,21,16,0.55)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999 }}>
-          <div style={{ width: '520px', background: '#fffdf9', border: '1.5px solid #e0d8c5', borderRadius: '12px', overflow: 'hidden', boxShadow: '0 10px 30px rgba(0,0,0,0.08)' }}>
+          <div style={{ width: '640px', maxHeight: '90vh', background: '#fffdf9', border: '1.5px solid #e0d8c5', borderRadius: '12px', overflow: 'hidden', boxShadow: '0 10px 30px rgba(0,0,0,0.08)', display: 'flex', flexDirection: 'column' }}>
+            
             <div style={{ display: 'flex', justifyContent: 'space-between', padding: '14px 16px', borderBottom: '1px solid #e9e1d2', fontWeight: 600, color: '#1a1510' }}>
-              {isEditMode ? 'Edit User Profile' : 'Add New User'}
+              {isEditMode ? 'Edit User & Permissions' : 'Add New User'}
               <button onClick={closeFormModal} disabled={loading} style={{ background: 'transparent', border: 'none', cursor: 'pointer', fontSize: '16px', color: '#6f6457' }}>✕</button>
             </div>
 
-            <div style={{ padding: '16px' }}>
-              <div className="form-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+            <div style={{ padding: '16px', overflowY: 'auto', flex: 1 }}>
+              <div style={{ fontWeight: 600, fontSize: '13px', marginBottom: '10px', color: '#1a1510' }}>Basic Profile Credentials</div>
+              
+              <div className="form-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', marginBottom: '20px' }}>
                 <input className="inp" name="name" placeholder="Name" value={formData.name} onChange={handleChange} disabled={loading} />
                 <input className="inp" name="username" placeholder="Username" value={formData.username} onChange={handleChange} disabled={loading} />
                 <input className="inp" name="mobile" placeholder="Mobile (10 digits)" value={formData.mobile} onChange={handleChange} disabled={loading} />
@@ -537,8 +625,8 @@ export default function UserManagement() {
                 />
 
                 <select className="inp" name="role" value={formData.role} onChange={handleChange} disabled={loading}>
-                  <option value="">Role</option>
-                  <option value="administrator">Administrator</option>
+                  <option value="">Select Role</option>
+                  <option value="administrator">Administrator (Full Access)</option>
                   <option value="manager">Manager</option>
                   <option value="viewer">Viewer</option>
                 </select>
@@ -575,23 +663,98 @@ export default function UserManagement() {
                   <option value="inactive">Inactive</option>
                 </select>
               </div>
+
+              {/* DYNAMIC SIDEBAR PERMISSIONS TICK BOX SECTION */}
+              <div style={{ borderTop: '1px solid #e9e1d2', paddingTop: '14px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
+                  <div>
+                    <div style={{ fontWeight: 600, fontSize: '13px', color: '#1a1510' }}>
+                      Sidebar Access Control (Ticked items will be visible to user)
+                    </div>
+                    <div style={{ fontSize: '11px', color: '#6f6457' }}>
+                      Administrators will always see all items automatically.
+                    </div>
+                  </div>
+                  
+                  <div style={{ display: 'flex', gap: '8px' }}>
+                    <button 
+                      type="button" 
+                      onClick={handleSelectAllPermissions}
+                      style={{ fontSize: '11px', background: '#e5e7eb', border: 'none', padding: '4px 8px', borderRadius: '4px', cursor: 'pointer' }}
+                    >
+                      Select All
+                    </button>
+                    <button 
+                      type="button" 
+                      onClick={handleClearAllPermissions}
+                      style={{ fontSize: '11px', background: '#e5e7eb', border: 'none', padding: '4px 8px', borderRadius: '4px', cursor: 'pointer' }}
+                    >
+                      Clear All
+                    </button>
+                  </div>
+                </div>
+
+                <div style={{ 
+                  display: 'grid', 
+                  gridTemplateColumns: '1fr 1fr', 
+                  gap: '8px', 
+                  background: '#f9f6f0', 
+                  padding: '12px', 
+                  borderRadius: '8px',
+                  border: '1px solid #e0d8c5'
+                }}>
+                  {SIDEBAR_OPTIONS.map(opt => {
+                    const isChecked = formData.allowed_permissions?.includes(opt.id);
+                    const isAdminSelected = formData.role === 'administrator' || formData.role === 'admin';
+
+                    return (
+                      <label 
+                        key={opt.id} 
+                        style={{ 
+                          display: 'flex', 
+                          alignItems: 'center', 
+                          gap: '8px', 
+                          fontSize: '12px', 
+                          color: '#1a1510',
+                          cursor: isAdminSelected ? 'not-allowed' : 'pointer',
+                          padding: '4px 6px',
+                          borderRadius: '4px',
+                          background: isChecked ? '#fff' : 'transparent',
+                          border: isChecked ? '1px solid #dcd3be' : '1px solid transparent'
+                        }}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={isChecked}
+                          disabled={isAdminSelected || loading}
+                          onChange={() => handlePermissionToggle(opt.id)}
+                          style={{ accentColor: '#b38f4f', cursor: 'pointer' }}
+                        />
+                        <span>{opt.label}</span>
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+
             </div>
 
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', padding: '14px 16px', borderTop: '1px solid #e9e1d2' }}>
               <button className="btn" onClick={closeFormModal} disabled={loading}>Cancel</button>
               <button className="btn btn-gold" onClick={handleSaveSubmit} disabled={loading}>
-                {loading ? 'Processing...' : isEditMode ? 'Update Details' : 'Save User'}
+                {loading ? 'Processing...' : isEditMode ? 'Update Details & Access' : 'Save User Profile'}
               </button>
             </div>
           </div>
         </div>
       )}
 
+      {/* CONFIRM UPDATE MODAL */}
       {showUpdateModal && (
         <div style={{ position: 'fixed', top: 0, left: 0, width: '100%', height: '100%', background: 'rgba(26,21,16,0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 10000 }}>
           <div style={{ width: '400px', background: '#fffdf9', border: '1.5px solid #e0d8c5', borderRadius: '12px', padding: '20px', boxShadow: '0 10px 25px rgba(0,0,0,0.1)' }}>
             <h3 style={{ margin: '0 0 10px 0', color: '#1a1510' }}>Confirm Profile Updates</h3>
-            <p style={{ fontSize: '13px', color: '#6f6457', margin: '0 0 20px 0', lineHeight: '1.5' }}>Are you absolutely sure you want to commit these profile changes to the system repository?</p>
+            <p style={{ fontSize: '13px', color: '#6f6457', margin: '0 0 20px 0', lineHeight: '1.5' }}>Are you absolutely sure you want to commit these profile and sidebar access changes?</p>
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px' }}>
               <button className="btn" onClick={() => setShowUpdateModal(false)}>No, Go Back</button>
               <button className="btn btn-gold" onClick={executeUpdate}>Yes, Update</button>
@@ -600,6 +763,7 @@ export default function UserManagement() {
         </div>
       )}
 
+      {/* CONFIRM DELETE MODAL */}
       {showDeleteModal && (
         <div style={{ position: 'fixed', top: 0, left: 0, width: '100%', height: '100%', background: 'rgba(26,21,16,0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 10000 }}>
           <div style={{ width: '400px', maxWidth: '400px', background: '#fffdf9', border: '1.5px solid #dc2626', borderRadius: '12px', padding: '20px', boxShadow: '0 10px 25px rgba(0,0,0,0.1)' }}>
@@ -615,6 +779,7 @@ export default function UserManagement() {
         </div>
       )}
 
+      {/* TOAST NOTIFICATION */}
       {toast.show && (
         <div style={{
           position: 'fixed',

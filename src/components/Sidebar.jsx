@@ -1,6 +1,9 @@
+// Sidebar.jsx
+
 import React, { useMemo, useState, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { supabase } from '../lib/supbase'; // Ensure this matches your supabase client instance path
+
 export default function Sidebar() {
   const navigate = useNavigate();
   const location = useLocation();
@@ -12,7 +15,8 @@ export default function Sidebar() {
     username: '',
     mobile: '',
     branch: '',
-    status: ''
+    status: '',
+    allowed_permissions: []
   });
 
   // Fetch complete profile context details from Supabase on mount
@@ -24,20 +28,24 @@ export default function Sidebar() {
 
         const { data, error } = await supabase
           .from('users_profile')
-          .select('id, name, role, username, mobile, branch, status')
+          .select('id, name, role, username, mobile, branch, status, allowed_permissions')
           .eq('id', publicUserId)
           .maybeSingle();
 
         if (error) throw error;
         if (data) {
-          setProfileData(data);
+          setProfileData({
+            ...data,
+            allowed_permissions: data.allowed_permissions || []
+          });
         }
       } catch (err) {
         console.error('Error loading sidebar profile metadata:', err.message);
         setProfileData(prev => ({
           ...prev,
           name: 'System User',
-          role: localStorage.getItem('user_role') || 'User'
+          role: localStorage.getItem('user_role') || 'User',
+          allowed_permissions: []
         }));
       }
     }
@@ -45,11 +53,16 @@ export default function Sidebar() {
     fetchSidebarProfile();
   }, []);
 
-  // 🔐 Role Matrices Optimization Flags
+  // 🔐 Role & Permission Checking
   const userRole = (profileData.role || '').toLowerCase();
   const isAdmin = userRole === 'admin' || userRole === 'administrator';
-  const isManager = userRole === 'manager';
   const isViewer = userRole === 'viewer'; 
+
+  // Helper function to check if a menu item should be visible
+  const hasAccess = (itemKey) => {
+    if (isAdmin) return true; // Admins always see everything
+    return Array.isArray(profileData.allowed_permissions) && profileData.allowed_permissions.includes(itemKey);
+  };
 
   const activeTab = useMemo(() => {
     const p = location.pathname;
@@ -62,12 +75,12 @@ export default function Sidebar() {
     if (p.includes('/claims')) return 'claims';
     if (p.includes('/pan-architect')) return 'pan-architect';
     if (p.includes('/commission')) return 'commission'; 
-     if (p.includes('/payout')) return 'payout'; 
+    if (p.includes('/payout')) return 'payout'; 
     if (p.includes('/profile')) return 'profile';
     if (p.includes('/full')) return 'full';
     if (p.includes('/query')) return 'query';
-    if (p.includes('/peligible')) return 'peligible'; // Added for ProductEligibilityPage
-    if(p.includes('/ventura')) return 'ventura';
+    if (p.includes('/peligible')) return 'peligible';
+    if (p.includes('/ventura')) return 'ventura';
     return 'dashboard';
   }, [location.pathname]);
 
@@ -83,11 +96,11 @@ export default function Sidebar() {
       profile: '/app/profile',
       master: '/app/master',
       payout: '/app/payout',
-      commission:'/app/commission',
+      commission: '/app/commission',
       full: '/app/full',
       query: '/app/query',
-      peligible: '/app/peligible', // Added for ProductEligibilityPage
-      ventura:'/app/ventura'
+      peligible: '/app/peligible',
+      ventura: '/app/ventura'
     };
 
     const path = map[viewId] || '/app/dashboard';
@@ -120,11 +133,17 @@ export default function Sidebar() {
 
   const avatarLetter = profileData.name ? profileData.name.charAt(0).toUpperCase() : 'U';
 
+  // Helper flags for Section Visibility
+  const showAdminSection = hasAccess('users') || hasAccess('master') || hasAccess('history') || hasAccess('full');
+  const showQuerySection = hasAccess('query');
+  const showEligibilitySection = hasAccess('peligible');
+  const showVenturaSection = hasAccess('ventura');
+  const showAccountsSection = hasAccess('accounts') || hasAccess('pan-architect') || hasAccess('payout') || hasAccess('remittance') || hasAccess('claims') || hasAccess('commission');
+
   return (
-    /* ✅ FIX 1: Explicitly convert the main nav container into a strict full-height flexible box flex grid layout */
     <nav id="sidebar" style={{ display: 'flex', flexDirection: 'column', height: '100vh', overflow: 'hidden' }}>
       
-      {/* BRANDING LOGO (Stays Fixed at Top) */}
+      {/* BRANDING LOGO */}
       <div className="sb-logo" style={{ flexShrink: 0 }}>
         <div className="sb-logo-icon">D+</div>
         <div>
@@ -133,25 +152,30 @@ export default function Sidebar() {
         </div>
       </div>
 
-      {/* ✅ FIX 2: Wrapped all navigation items in a flexible scroll container block layout */}
+      {/* NAVIGATION SCROLLER */}
       <div className="sb-nav-scroller" style={{ flex: 1, overflowY: 'auto', paddingBottom: '16px' }}>
+        
         {/* MAIN SECTION */}
-        <div className="sb-section">Main</div>
-        <div 
-          className={getNavItemClass('dashboard')} 
-          id="nav-dashboard" 
-          onClick={() => handleNavigation('dashboard')}
-          role="button" tabIndex={0}
-        >
-          <span className="sb-icon">📊</span> Dashboard
-        </div>
+        {hasAccess('dashboard') && (
+          <>
+            <div className="sb-section">Main</div>
+            <div 
+              className={getNavItemClass('dashboard')} 
+              id="nav-dashboard" 
+              onClick={() => handleNavigation('dashboard')}
+              role="button" tabIndex={0}
+            >
+              <span className="sb-icon">📊</span> Dashboard
+            </div>
+          </>
+        )}
 
-        {/* ADMIN PANEL (Accessible by Admin and Manager) */}
-        {(isAdmin || isManager) && (
+        {/* ADMIN PANEL */}
+        {showAdminSection && (
           <>
             <div className="sb-section" id="sb-sec-admin">Admin Panel</div>
             
-            {isAdmin && (
+            {hasAccess('users') && (
               <div 
                 className={getNavItemClass('users')} 
                 id="nav-users" 
@@ -160,9 +184,8 @@ export default function Sidebar() {
                 <span className="sb-icon">👥</span> User Management
               </div>
             )}
-             
 
-            {isAdmin && (
+            {hasAccess('master') && (
               <div 
                 className={getNavItemClass('master')} 
                 id="nav-master" 
@@ -172,7 +195,7 @@ export default function Sidebar() {
               </div>
             )}
 
-            {isAdmin && (
+            {hasAccess('history') && (
               <div 
                 className={getNavItemClass('history')} 
                 id="nav-history" 
@@ -181,119 +204,132 @@ export default function Sidebar() {
                 <span className="sb-icon">🗂️</span> Upload History
               </div>
             )}
-            {isAdmin && (
+
+            {hasAccess('full') && (
               <div 
                 className={getNavItemClass('full')} 
-                id="nav-users" 
+                id="nav-full" 
                 onClick={() => handleNavigation('full')}
               >
                 <span className="sb-icon">ℹ️</span> Complete Data Access
               </div>
             )}
-             
-          </>
-        )}
- {/* ADMIN PANEL (Accessible by Admin and Manager) */}
-        {(isAdmin || isManager) && (
-          <>
-            <div className="sb-section" id="sb-sec-admin">Query Section</div>
-            {isAdmin && (
-              <div 
-                className={getNavItemClass('query')} 
-                id="nav-users" 
-                onClick={() => handleNavigation('query')}
-              >
-                <span className="sb-icon">❓</span> Get Query
-              </div>
-            )}
-             
-          </>
-        )}
-         {(isAdmin || isManager) && (
-          <>
-            <div className="sb-section" id="sb-sec-admin">Branch Eligiblity Section</div>
-            {isAdmin && (
-              <div 
-                className={getNavItemClass('peligible')} 
-                id="nav-peligible" 
-                onClick={() => handleNavigation('peligible')}
-              >
-                <span className="sb-icon">📋</span> Branch Eligibility
-              </div>
-            )}
-             
           </>
         )}
 
-          {(isAdmin || isManager) && (
+        {/* QUERY SECTION */}
+        {showQuerySection && (
           <>
-            <div className="sb-section" id="sb-sec-admin">Complete Information Section</div>
-            {isAdmin && (
-              <div 
-                className={getNavItemClass('ventura')} 
-                id="nav-peligible" 
-                onClick={() => handleNavigation('ventura')}
-              >
-                <span className="sb-icon">📈</span> Complete Branch Data
-              </div>
-            )}
-             
+            <div className="sb-section" id="sb-sec-query">Query Section</div>
+            <div 
+              className={getNavItemClass('query')} 
+              id="nav-query" 
+              onClick={() => handleNavigation('query')}
+            >
+              <span className="sb-icon">❓</span> Get Query
+            </div>
           </>
         )}
-        {/* ACCOUNTS SECTION (Accessible by Admin and Manager) */}
-        {(isAdmin || isManager) && (
+
+        {/* BRANCH ELIGIBILITY SECTION */}
+        {showEligibilitySection && (
+          <>
+            <div className="sb-section" id="sb-sec-eligibility">Branch Eligibility Section</div>
+            <div 
+              className={getNavItemClass('peligible')} 
+              id="nav-peligible" 
+              onClick={() => handleNavigation('peligible')}
+            >
+              <span className="sb-icon">📋</span> Branch Eligibility
+            </div>
+          </>
+        )}
+
+        {/* COMPLETE INFORMATION SECTION */}
+        {showVenturaSection && (
+          <>
+            <div className="sb-section" id="sb-sec-ventura">Complete Information Section</div>
+            <div 
+              className={getNavItemClass('ventura')} 
+              id="nav-ventura" 
+              onClick={() => handleNavigation('ventura')}
+            >
+              <span className="sb-icon">📈</span> Complete Branch Data
+            </div>
+          </>
+        )}
+
+        {/* ACCOUNTS SECTION */}
+        {showAccountsSection && (
           <>
             <div className="sb-section">Accounts</div>
-            <div 
-              className={getNavItemClass('accounts')} 
-              id="nav-accounts" 
-              onClick={() => handleNavigation('accounts')}
-            >
-              <span className="sb-icon">👛</span> Architect Accounts
-            </div>
+
+            {hasAccess('accounts') && (
+              <div 
+                className={getNavItemClass('accounts')} 
+                id="nav-accounts" 
+                onClick={() => handleNavigation('accounts')}
+              >
+                <span className="sb-icon">👛</span> Architect Accounts
+              </div>
+            )}
             
-            <div 
-              className={getNavItemClass('pan-architect')} 
-              id="nav-pan-architect" 
-              onClick={() => handleNavigation('pan-architect')}
-            >
-              <span className="sb-icon">🌐</span> Pan Architect
-            </div>
- <div 
-              className={getNavItemClass('payout')} 
-              id="nav-pan-architect" 
-              onClick={() => handleNavigation('payout')}
-            >
-              <span className="sb-icon">💰</span> Payout Request
-            </div>
-            <div 
-              className={getNavItemClass('remittance')} 
-              id="nav-remittance" 
-              onClick={() => handleNavigation('remittance')}
-            >
-              <span className="sb-icon">💳</span> Remittance Entry
-            </div>
-            <div 
-              className={getNavItemClass('claims')} 
-              id="nav-claims" 
-              onClick={() => handleNavigation('claims')}
-            >
-              <span className="sb-icon">🔗</span> Claim Processor
-            </div>
-             <div 
-              className={getNavItemClass('commission')} 
-              id="nav-pan-architect" 
-              onClick={() => handleNavigation('commission')}
-            >
-              <span className="sb-icon">🪙</span>Qualified Architect Split
-            </div>
+            {hasAccess('pan-architect') && (
+              <div 
+                className={getNavItemClass('pan-architect')} 
+                id="nav-pan-architect" 
+                onClick={() => handleNavigation('pan-architect')}
+              >
+                <span className="sb-icon">🌐</span> Pan Architect
+              </div>
+            )}
+
+            {hasAccess('payout') && (
+              <div 
+                className={getNavItemClass('payout')} 
+                id="nav-payout" 
+                onClick={() => handleNavigation('payout')}
+              >
+                <span className="sb-icon">💰</span> Payout Request
+              </div>
+            )}
+
+            {hasAccess('remittance') && (
+              <div 
+                className={getNavItemClass('remittance')} 
+                id="nav-remittance" 
+                onClick={() => handleNavigation('remittance')}
+              >
+                <span className="sb-icon">💳</span> Remittance Entry
+              </div>
+            )}
+
+            {hasAccess('claims') && (
+              <div 
+                className={getNavItemClass('claims')} 
+                id="nav-claims" 
+                onClick={() => handleNavigation('claims')}
+              >
+                <span className="sb-icon">🔗</span> Claim Processor
+              </div>
+            )}
+
+            {hasAccess('commission') && (
+              <div 
+                className={getNavItemClass('commission')} 
+                id="nav-commission" 
+                onClick={() => handleNavigation('commission')}
+              >
+                <span className="sb-icon">🪙</span> Qualified Architect Split
+              </div>
+            )}
           </>
         )}
 
         {/* VIEWER NOTICE SECTION */}
         {isViewer && (
           <div style={{ padding: '12px 16px', fontSize: '11px', color: '#8b846f', fontStyle: 'italic' }}>
-            🔒 Limited Viewer Mode active.
+            🔒 Custom Permissions active.
           </div>
         )}
 
@@ -308,7 +344,7 @@ export default function Sidebar() {
         </div>
       </div>
 
-      {/* FOOTER USER MANAGEMENT (Stays permanently locked/visible at the bottom now) */}
+      {/* FOOTER USER MANAGEMENT */}
       <div className="sb-footer" style={{ flexShrink: 0, marginTop: 'auto' }}>
         <div className="user-pill">
           <div className="user-av" id="sbAvatar">{avatarLetter}</div>
