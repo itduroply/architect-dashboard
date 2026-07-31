@@ -793,7 +793,7 @@ const runClaimProcessor = async () => {
               />
               <span className="dz-icon" style={{ fontSize: '32px', display: 'block', marginBottom: '8px' }}>📋</span>
               <div className="dz-title" style={{ fontWeight: 500, fontSize: '14px' }}>
-                {isUploadingLead ? `Uploading to Database (${uploadProgress}%)` : 'Drop Lead Master File'}
+                {isUploadingLead ? `Uploading to Database (${uploadProgress}%)` : 'Drop Lead Detail Report'}
               </div>
               <div className="dz-sub" style={{ fontSize: '11px', color: '#9ca3af' }}>.xlsx · .xls · .csv — Lead ID · Architect · DMI</div>
             </div>
@@ -828,7 +828,7 @@ const runClaimProcessor = async () => {
               />
               <span className="dz-icon" style={{ fontSize: '32px', display: 'block', marginBottom: '8px' }}>📊</span>
               <div className="dz-title" style={{ fontWeight: 500, fontSize: '14px' }}>
-                {isUploadingDmi ? `Uploading to Database (${uploadProgress}%)` : 'Drop DMI Claim File'}
+                {isUploadingDmi ? `Uploading to Database (${uploadProgress}%)` : 'Drop Influencer Claim Stage Detail Report'}
               </div>
               <div className="dz-sub" style={{ fontSize: '11px', color: '#9ca3af' }}>.xlsx · .xls · .csv — Lead ID · Approved Qty · Status</div>
             </div>
