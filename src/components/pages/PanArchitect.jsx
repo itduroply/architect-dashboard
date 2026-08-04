@@ -20,6 +20,41 @@ export default function UploadExcel() {
   const [editForm, setEditForm] = useState({});
   const location = useLocation();
 
+  // Database value is kept as-is; this is only for a clean name in the UI table.
+  const getDisplayArchitectName = (fullName) => {
+    if (!fullName) return '-';
+
+    let name = String(fullName).split('|').pop().trim()
+      .replace(/^(?:ar\.?|architect)\s+/i, '')
+      .replace(/\s*@\s*architect\b/ig, '')
+      .split(/\s+-\s+/)[0]
+      .trim();
+
+    // Some imported rows contain the same name twice, e.g. "Harman singhHarman singh".
+    const repeatedName = name.match(/^(.+?)\1$/i);
+    if (repeatedName) name = repeatedName[1].trim();
+
+    const onlyLetters = name.replace(/[^a-z]/ig, '');
+    if (onlyLetters.length > 1 && onlyLetters === onlyLetters.toUpperCase()) {
+      name = name.toLowerCase().replace(/(^|[\s.])([a-z])/g, (_, prefix, letter) => `${prefix}${letter.toUpperCase()}`);
+    }
+
+    // Imported names are sometimes fully joined in lowercase (for example, "Rajusharma").
+    name = name.replace(
+      /\b([a-z]+?)(agarwal|bansal|bhatt|chopra|gupta|jain|kapoor|khanna|maddela|mali|mehta|murthy|nawal|patel|rathore|reddy|sharma|singh|verma)\b/ig,
+      '$1 $2'
+    );
+
+    return name
+      .replace(/([a-z])([A-Z])/g, '$1 $2')
+      .replace(/([A-Z])([A-Z][a-z])/g, '$1 $2')
+      .replace(/\.(?=[A-Za-z])/g, '. ')
+      .replace(/\s+/g, ' ')
+      .toLowerCase()
+      .replace(/(^|[\s.])([a-z])/g, (_, prefix, letter) => `${prefix}${letter.toUpperCase()}`)
+      .trim() || '-';
+  };
+
   // ─── 👤 OPERATOR IDENTITY RESOLVER FALLBACK MATRIX ───
   const resolveOperatorName = async () => {
     let currentUserName = location.state?.userProfile?.name;
@@ -434,7 +469,7 @@ export default function UploadExcel() {
               <tbody>
                 {currentPagedItems.map((row) => (
                   <tr key={row.id}>
-                    <td style={styles.td}>{row.influencer_name}</td>
+                    <td style={styles.td}>{getDisplayArchitectName(row.influencer_name)}</td>
                     <td style={{ ...styles.td, fontFamily: 'monospace', color: '#736557', fontWeight: '600' }}>{row.account_number}</td>
                     <td style={styles.td}>{row.mobile_number}</td>
                     <td style={styles.td}>{row.market_city}</td>

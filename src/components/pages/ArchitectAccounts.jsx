@@ -88,6 +88,41 @@ const ArchitectAccounts = () => {
     return str.includes('|') ? str.split('|')[0].trim() : str.trim();
   };
 
+  // Keep the full value for ledger lookups, but show only the architect's name in the table.
+  const getArchitectDisplayName = (fullName) => {
+    if (!fullName) return 'Unmapped Architect';
+
+    let nameWithDetails = String(fullName).split('|').pop().trim();
+    nameWithDetails = nameWithDetails
+      .replace(/^(?:ar\.?|architect)\s+/i, '')
+      .replace(/\s*@\s*architect\b/ig, '')
+      .split(/\s+-\s+/)[0]
+      .trim();
+
+    const repeatedName = nameWithDetails.match(/^(.+?)\1$/i);
+    if (repeatedName) nameWithDetails = repeatedName[1].trim();
+
+    const onlyLetters = nameWithDetails.replace(/[^a-z]/ig, '');
+    if (onlyLetters.length > 1 && onlyLetters === onlyLetters.toUpperCase()) {
+      nameWithDetails = nameWithDetails.toLowerCase().replace(/(^|[\s.])([a-z])/g, (_, prefix, letter) => `${prefix}${letter.toUpperCase()}`);
+    }
+
+    // Imported names are sometimes fully joined in lowercase (for example, "Rajusharma").
+    nameWithDetails = nameWithDetails.replace(
+      /\b([a-z]+?)(agarwal|bansal|bhatt|chopra|gupta|jain|kapoor|khanna|maddela|mali|mehta|murthy|nawal|patel|rathore|reddy|sharma|singh|verma)\b/ig,
+      '$1 $2'
+    );
+
+    return nameWithDetails
+      .replace(/([a-z])([A-Z])/g, '$1 $2')
+      .replace(/([A-Z])([A-Z][a-z])/g, '$1 $2')
+      .replace(/\.(?=[A-Za-z])/g, '. ')
+      .replace(/\s+/g, ' ')
+      .toLowerCase()
+      .replace(/(^|[\s.])([a-z])/g, (_, prefix, letter) => `${prefix}${letter.toUpperCase()}`)
+      .trim() || 'Unmapped Architect';
+  };
+
   // Telemetry Logging Engine
   const logTelemetry = async (actionType, description) => {
     try {
@@ -1373,7 +1408,7 @@ const ArchitectAccounts = () => {
                         alignItems: 'center',
                         gap: '6px'
                       }} 
-                      title={`View sales summary for ${row.architect_name}`}
+                      title={`View sales summary for ${getArchitectDisplayName(row.architect_name)}`}
                     >
                       {row.hasNaturesSignature && (
                         <span 
@@ -1392,7 +1427,7 @@ const ArchitectAccounts = () => {
                           ✏️
                         </span>
                       )}
-                      <span>{row.architect_name}</span>
+                      <span>{getArchitectDisplayName(row.architect_name)}</span>
                     </td>
                     
                     <td style={{ padding: '10px 12px', color: '#4b5563', fontWeight: '500', fontSize: '12.5px' }}>
