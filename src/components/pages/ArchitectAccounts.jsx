@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useLocation } from 'react-router-dom';
 import { supabase } from '../../lib/supbase'; 
+import * as XLSX from 'xlsx';
 
 const ArchitectAccounts = () => {
   const location = useLocation();
@@ -626,6 +627,89 @@ const ArchitectAccounts = () => {
   };
 
   const handleExportExcel = () => {
+    if (filteredArchitects.length === 0) {
+      showToast('No architects match the active filters to export.', 'error');
+      return;
+    }
+
+    const getProductCategory = (sku) => {
+      const upperSku = String(sku || '').toUpperCase();
+      if (upperSku.startsWith('PW')) return 'Plywood (PW)';
+      if (upperSku.startsWith('BB')) return 'Blockboard (BB)';
+      if (upperSku.startsWith('FD')) return 'Flush Door (FD)';
+      if (upperSku.includes('DEC') || upperSku.includes('DECORATIVE') || upperSku.includes('NATURES SIGNATURE') || upperSku.includes('NATURE SIGNATURE')) return 'Decorative';
+      return 'Other';
+    };
+
+    // Match against the same filtered rows rendered in the table, so every active UI filter is retained.
+    const selectedArchitectsById = new Map(filteredArchitects.map((architect) => [architect.architect_id, architect]));
+    // This is the same SKU-wise grouping shown after clicking an architect name in the UI.
+    // Multiple ledger/claim rows for one SKU are combined into its total sold sheets.
+    const productSummary = rawLedgerData.reduce((result, ledgerRow) => {
+      const architectId = extractArchitectId(ledgerRow.architect_name || ledgerRow.architectName);
+      const architect = selectedArchitectsById.get(architectId);
+      const sheets = Number(ledgerRow.total_eligible_sheets || ledgerRow.totalSheets || 0);
+      if (!architect || sheets === 0) return result;
+
+      const sku = ledgerRow.product_sku || 'UNKNOWN';
+      const key = `${architectId}__${sku}`;
+      if (!result[key]) {
+        result[key] = {
+          'Architect Name': getArchitectDisplayName(architect.architect_name),
+          'Account ID': architect.architect_id,
+          State: architect.state || 'Unknown',
+          Eligibility: architect.isEligible ? 'Eligible' : 'Ineligible',
+          'Product Category': getProductCategory(sku),
+          'Product SKU': sku,
+          'Total Sheets Sold': 0,
+          'Total Product Payout': 0,
+        };
+      }
+      result[key]['Total Sheets Sold'] += sheets;
+      result[key]['Total Product Payout'] += Number(ledgerRow.total_payout_amount || ledgerRow.payoutAmount || ledgerRow.amount || 0);
+      return result;
+    }, {});
+    const productRows = Object.values(productSummary)
+      .sort((a, b) => a['Architect Name'].localeCompare(b['Architect Name']) || a['Product SKU'].localeCompare(b['Product SKU']));
+
+    const productDetailsByAccount = productRows.reduce((result, product) => {
+      const accountId = product['Account ID'];
+      const category = product['Product Category'];
+      if (!result[accountId]) result[accountId] = {};
+      if (!result[accountId][category]) result[accountId][category] = [];
+      result[accountId][category].push(`${product['Product SKU']} - ${product['Total Sheets Sold'].toFixed(1)} Sheets`);
+      return result;
+    }, {});
+
+    const summaryRows = filteredArchitects.map((architect, index) => ({
+      Rank: index + 1,
+      'Architect Name': getArchitectDisplayName(architect.architect_name),
+      'Account Number': architect.architect_id,
+      Sheets: Number(architect.total_sheets || 0),
+      'Pool Payout': Number(architect.actualPayoutAllowed || 0),
+      Paid: Number(architect.credited_amount || 0),
+      State: architect.state || 'Unknown',
+      Balance: Number(architect.balance_due || 0),
+      'Eligibility Status': architect.isEligible ? 'Eligible' : 'Ineligible',
+      // Same category and SKU totals shown in the architect-name click modal.
+      'Product Details': Object.entries(productDetailsByAccount[architect.architect_id] || {})
+        .map(([category, products]) => `${category}:\n${products.join('\n')}`)
+        .join('\n\n') || 'No eligible sheets',
+    }));
+
+    const workbook = XLSX.utils.book_new();
+    const summarySheet = XLSX.utils.json_to_sheet(summaryRows);
+    summarySheet['!autofilter'] = { ref: summarySheet['!ref'] || 'A1' };
+    summarySheet['!freeze'] = { xSplit: 0, ySplit: 1 };
+    summarySheet['!cols'] = [{ wch: 8 }, { wch: 30 }, { wch: 18 }, { wch: 12 }, { wch: 16 }, { wch: 14 }, { wch: 20 }, { wch: 16 }, { wch: 20 }, { wch: 55 }];
+    XLSX.utils.book_append_sheet(workbook, summarySheet, 'Architect Accounts');
+    XLSX.writeFile(workbook, `Architect_Accounts_Report_${new Date().toISOString().slice(0, 10)}.xlsx`);
+
+    logTelemetry('EXPORT_EXCEL_REPORT', `Exported ${summaryRows.length} filtered architect account rows with product details.`);
+    showToast(`Exported ${summaryRows.length} architect rows with product details.`, 'success');
+    return;
+
+    /* Legacy CSV export retained below temporarily for reference.
     const globalSummary = {};
     
     rawLedgerData.forEach(row => {
@@ -675,6 +759,7 @@ const ArchitectAccounts = () => {
     document.body.removeChild(link);
     
     logTelemetry("EXPORT_EXCEL_REPORT", "Generated comprehensive sales summary matrix report for Excel.");
+    */
   };
 
   const filteredArchitects = architectsList.filter((row) => {
