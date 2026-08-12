@@ -73,12 +73,18 @@ const sanitizeString = (str) => {
   }, [snackbar.show]);
 
   /**
-   * Cleanses structural delimiters safely without useless escapes for ESLint compliance.
-   * Example: "PW_DURO PUMAPLY_19mm" -> "PWDUROPUMAPLY19MM"
+   * Creates one case-insensitive SKU key for both Excel and master data.
+   * Examples: "PW_DUROFLEX_6MM", "pw_duroflex_6mm" and "PW DUROFLEX 6 MM"
+   * all resolve to "pwduroflex6mm".
    */
   const aggressiveNormalize = (str) => {
     if (!str) return '';
-    return str.toString().trim().toUpperCase().replace(/[\s_\-/.]/g, '');
+    return str
+      .toString()
+      .normalize('NFKC')
+      .trim()
+      .toLocaleLowerCase('en-US')
+      .replace(/[^a-z0-9]/g, '');
   };
 
   // Parsing and uploading Lead Master records using high-performance mapping lists
@@ -373,6 +379,14 @@ const runClaimProcessor = async () => {
     // 2. Fetch dataset tables
     const dbLeads = await fetchAllRecordsOptimized('leads_master', 'lead_id, linked_architect,state,lead_status', 'lead_id');
     const dbClaims = await fetchAllRecordsOptimized('dmi_claims', 'claim_no, lead_id, status, product_code, approved_qty,claim_date', 'claim_no');
+    // The ledger is transactional. Once a claim has been settled (or its Nature's
+    // Signature volume has been converted), importing the same source files must
+    // never recreate or overwrite that ledger transaction.
+    const existingLedgerRows = await fetchAllRecordsOptimized(
+      'commission_ledger',
+      'claim_no, product_sku, total_eligible_sheets, payout_status',
+      'claim_no'
+    );
     
     const { data: dbSkus, error: errSkus } = await supabase.from('product_sku_master').select('sku, price');
 
@@ -384,6 +398,63 @@ const runClaimProcessor = async () => {
       showNotification("No records exist to process. Please upload files first.", "error");
       setIsProcessing(false);
       return;
+    }
+
+    const existingLedgerClaimNos = new Set(
+      existingLedgerRows
+        .map(row => String(row.claim_no || '').trim())
+        .filter(Boolean)
+    );
+
+    // Legacy conversions created target rows with IDs such as SOURCE-1-1.1.
+    // Retain this recognition so conversions made before the zero-volume source
+    // row fix are also protected when an old report is uploaded again.
+    const legacyConvertedNatureClaimNos = new Set();
+    const legacyConvertedTargetsBySourceClaim = new Map();
+    existingLedgerRows.forEach(row => {
+      const targetSku = String(row.product_sku || '');
+      const targetClaimNo = String(row.claim_no || '').trim();
+      const match = targetClaimNo.match(/^([^-]+)-([^-]+)-1\.\d+$/);
+
+      if (match && !/NATURE'?S?[\s_]*SIGNATURE/i.test(targetSku)) {
+        const sourceClaimNo = `${match[1]}-${match[2]}`;
+        legacyConvertedNatureClaimNos.add(sourceClaimNo);
+        const targets = legacyConvertedTargetsBySourceClaim.get(sourceClaimNo) || [];
+        targets.push(row);
+        legacyConvertedTargetsBySourceClaim.set(sourceClaimNo, targets);
+      }
+    });
+
+    // Repair source rows created by the old re-upload bug, but only for a full
+    // conversion: its converted target must have exactly the same sheet volume.
+    // A partially converted Nature's Signature row is deliberately left intact.
+    const legacySourceRowsToZero = existingLedgerRows.filter(row => {
+      const sourceClaimNo = String(row.claim_no || '').trim();
+      const sourceSku = String(row.product_sku || '');
+      if (!/NATURE'?S?[\s_]*SIGNATURE/i.test(sourceSku)) return false;
+
+      const convertedTargets = legacyConvertedTargetsBySourceClaim.get(sourceClaimNo) || [];
+      const sourceSheets = parseFloat(row.total_eligible_sheets || 0);
+      return sourceSheets > 0 && convertedTargets.some(target =>
+        Math.abs(parseFloat(target.total_eligible_sheets || 0) - sourceSheets) < 0.0001
+      );
+    });
+
+    if (legacySourceRowsToZero.length > 0) {
+      await Promise.all(legacySourceRowsToZero.map(sourceRow =>
+        supabase
+          .from('commission_ledger')
+          .update({
+            total_eligible_sheets: 0,
+            total_payout_amount: 0,
+            payout_status: 'Converted to Decorative SKU'
+          })
+          .eq('claim_no', sourceRow.claim_no)
+          .eq('product_sku', sourceRow.product_sku)
+          .then(({ error }) => {
+            if (error) throw error;
+          })
+      ));
     }
 
     // Build lookup maps
@@ -413,9 +484,30 @@ const runClaimProcessor = async () => {
 
     // Process claims
     dbClaims.forEach(claim => {
+      const claimNo = String(claim.claim_no || '').trim();
       const claimLeadId = (claim.lead_id || '').toString().trim();
       const matchingLead = leadsMap[claimLeadId];
       const currentStatus = (claim.status || '').toString().trim().toUpperCase();
+      const fileProductCode = (claim.product_code || '').toString().trim();
+      const isNatureSignature = /SIGNATURE|NATURE/i.test(fileProductCode);
+
+      if (existingLedgerClaimNos.has(claimNo)) {
+        analyticalFlags.push({
+          id: claim.claim_no,
+          type: 'Existing Ledger Claim Skipped',
+          description: `Claim '${claim.claim_no}' is already present in Commission Ledger and was not processed again.`
+        });
+        return;
+      }
+
+      if (isNatureSignature && legacyConvertedNatureClaimNos.has(claimNo)) {
+        analyticalFlags.push({
+          id: claim.claim_no,
+          type: 'Previously Converted Nature Signature Claim Skipped',
+          description: `Claim '${claim.claim_no}' was previously converted and will not be recreated from this upload.`
+        });
+        return;
+      }
 
       const isApproved = currentStatus.startsWith('APPROVE') || currentStatus === 'SANCTIONED';
 
@@ -468,13 +560,11 @@ const runClaimProcessor = async () => {
 
       const leadState = matchingLead?.state ? matchingLead.state.toString().trim() : 'Unknown';
       const leadStatus = matchingLead?.lead_status ? matchingLead.lead_status.toString().trim() : 'Unknown';
-      const fileProductCode = (claim.product_code || '').toString().trim();
       let matchKey = aggressiveNormalize(fileProductCode);
 
       // =========================================================================
       // NATURE'S SIGNATURE DIRECT BYPASS & PRICE MATRIX LOOKUP
       // =========================================================================
-      const isNatureSignature = /SIGNATURE|NATURE/i.test(fileProductCode);
       let unitRatePrice = 0;
 
       if (isNatureSignature) {
@@ -486,11 +576,11 @@ const runClaimProcessor = async () => {
 
         // Fallbacks for Doors & Generic Decorative
         if (unitRatePrice === 0) {
-          if (fileProductCode.toUpperCase().startsWith('FD') || matchKey.startsWith('FD')) {
-            const rootDoor = matchKey.replace(/\d+MM$/i, '') + 'ALLTHICKNESS';
+          if (fileProductCode.toUpperCase().startsWith('FD') || matchKey.startsWith('fd')) {
+            const rootDoor = matchKey.replace(/\d+mm$/i, '') + 'allthickness';
             if (skuPriceMap[rootDoor]) unitRatePrice = skuPriceMap[rootDoor];
-          } else if (fileProductCode.toUpperCase().startsWith('DECORATIVE') || matchKey.startsWith('DECORATIVE')) {
-            const rootDecor = matchKey.replace(/\d+$/i, '') + 'ALLTHICKNESS';
+          } else if (fileProductCode.toUpperCase().startsWith('DECORATIVE') || matchKey.startsWith('decorative')) {
+            const rootDecor = matchKey.replace(/\d+$/i, '') + 'allthickness';
             if (skuPriceMap[rootDecor]) unitRatePrice = skuPriceMap[rootDecor];
           }
         }

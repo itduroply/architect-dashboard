@@ -68,8 +68,15 @@ export default function SupabaseArchitectDashboard() {
 
         if (commErr) console.warn("Commission ledger fetch warning:", commErr.message);
 
+        // Zero-sheet Nature's Signature rows are conversion markers retained for
+        // upload deduplication. They are not sellable products and must never be
+        // rendered in an architect-facing dashboard.
+        const visibleCommissions = (commissions || []).filter(c =>
+          Number(c.total_eligible_sheets || 0) > 0
+        );
+
         const commMap = {};
-        (commissions || []).forEach(c => {
+        visibleCommissions.forEach(c => {
           const key = String(c.lead_id).trim();
           if (!commMap[key]) commMap[key] = [];
           commMap[key].push(c);
@@ -174,7 +181,8 @@ export default function SupabaseArchitectDashboard() {
         const { data: commissionRecords, error: commissionErr } = await supabase
           .from('commission_ledger')
           .select('*')
-          .in('lead_id', leadIds);
+          .in('lead_id', leadIds)
+          .gt('total_eligible_sheets', 0);
 
         if (commissionErr) throw commissionErr;
         setCommissionData(commissionRecords || []);

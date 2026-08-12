@@ -45,6 +45,16 @@ const ArchitectAccounts = () => {
     maxQty: 0,
     targetSku: '',
     transferQty: '',
+    reconversionReason: '',
+  });
+
+  // A converted Nature's Signature target may be converted again only after a
+  // reason is recorded for audit purposes.
+  const [reconversionModal, setReconversionModal] = useState({
+    show: false,
+    sourceSku: '',
+    maxQty: 0,
+    reason: '',
   });
 
   // Searchable Dropdown State for Target SKU
@@ -110,7 +120,7 @@ const ArchitectAccounts = () => {
 
     // Imported names are sometimes fully joined in lowercase (for example, "Rajusharma").
     nameWithDetails = nameWithDetails.replace(
-      /\b([a-z]+?)(agarwal|bansal|bhatt|chopra|gupta|jain|kapoor|khanna|maddela|mali|mehta|murthy|nawal|patel|rathore|reddy|sharma|singh|verma)\b/ig,
+      /\b([a-z]+?)(kalandre|pratab|yadav|kohli|singhai|charate|singhal|agarawal|agarwal|bansal|bhatt|chopra|gupta|jain|kapoor|khanna|maddela|mali|mehta|murthy|nawal|patel|rathore|reddy|sharma|singh|verma|kumar|powar)\b/ig,
       '$1 $2'
     );
 
@@ -207,7 +217,7 @@ const ArchitectAccounts = () => {
     try {
       const { data, error } = await supabase
         .from('commission_ledger')
-        .select('product_sku, total_eligible_sheets')
+        .select('product_sku, total_eligible_sheets, payout_status')
         .eq('architect_name', architectName);
       if (error) throw error;
 
@@ -232,9 +242,12 @@ const ArchitectAccounts = () => {
         acc[category].categoryTotal += sheetsCount;
 
         if (!acc[category].skus[sku]) {
-          acc[category].skus[sku] = 0;
+          acc[category].skus[sku] = { total: 0, isConverted: false };
         }
-        acc[category].skus[sku] += sheetsCount;
+        acc[category].skus[sku].total += sheetsCount;
+        acc[category].skus[sku].isConverted = acc[category].skus[sku].isConverted ||
+          row.payout_status === 'Converted Nature Signature Target' ||
+          (/NATURESIGNATURE/i.test(sku) && !/NATURES[\s_]+SIGNATURE/i.test(sku));
 
         return acc;
       }, {});
@@ -246,6 +259,21 @@ const ArchitectAccounts = () => {
       showToast(`❌ Failed to load details: ${err.message}`, 'error');
       setDetailsModal(prev => ({ ...prev, loading: false, show: false }));
     }
+  };
+
+  const openTransferModal = (sourceSku, maxQty, reconversionReason = '') => {
+    setTransferState({
+      show: true,
+      loading: false,
+      sourceSku,
+      maxQty,
+      targetSku: '',
+      transferQty: maxQty.toString(),
+      reconversionReason,
+    });
+    setConversionTab('7%');
+    setTargetSkuSearch('');
+    setTargetDropdownOpen(false);
   };
 
  // Transfer Nature's Signature Logic with Percentage persistence
@@ -285,6 +313,7 @@ const ArchitectAccounts = () => {
       };
 
       const sourceSkuNormalized = superNormalize(transferState.sourceSku);
+      const sourceIsNaturesSignature = /NATURE'?S?[\s_]*SIGNATURE/i.test(transferState.sourceSku || '');
 
       // Match target master product filtering by BOTH normalized SKU AND active conversion tab (10% vs 7%)
       const targetMasterProduct = decorativeMasterList.find(p => 
@@ -327,7 +356,8 @@ const ArchitectAccounts = () => {
             total_eligible_sheets: newTargetSheets,
             matrix_rate: targetRate,
             total_payout_amount: newTargetPayout,
-            percentage: targetPercentage // 👈 Added percentage column update
+            percentage: targetPercentage, // 👈 Added percentage column update
+            ...(sourceIsNaturesSignature ? { payout_status: 'Converted Nature Signature Target' } : {})
           })
           .eq('architect_name', detailsModal.architectName)
           .eq('product_sku', existingTargetRow.product_sku); 
@@ -343,7 +373,7 @@ const ArchitectAccounts = () => {
         
         let bifurcatedClaimNo = '';
         
-        const isNaturesSig = /NATURE'?S?[\s_]*SIGNATURE/i.test(transferState.sourceSku || '');
+        const isNaturesSig = sourceIsNaturesSignature;
 
         if (isNaturesSig) {
           const targetBasePattern = `${rootClaimNo}-${currentSuffix}-1`;
@@ -371,7 +401,8 @@ const ArchitectAccounts = () => {
           total_eligible_sheets: qtyToTransfer,
           matrix_rate: targetRate,
           total_payout_amount: newTargetPayout,
-          percentage: targetPercentage // 👈 Added percentage column insert
+          percentage: targetPercentage, // 👈 Added percentage column insert
+          payout_status: 'Converted Nature Signature Target'
         };
         
         delete newRow.id; 
@@ -399,14 +430,21 @@ const ArchitectAccounts = () => {
         remainingToDeduct -= deduct;
 
         if (newSheets <= 0) {
-          const { error: deleteErr } = await supabase
+          // Preserve the original claim at zero rather than deleting it. This is
+          // the durable conversion marker used by the upload processor to avoid
+          // recreating this source SKU when the same Excel data is uploaded again.
+          const { error: updateSourceErr } = await supabase
             .from('commission_ledger')
-            .delete()
+            .update({
+              total_eligible_sheets: 0,
+              total_payout_amount: 0,
+              payout_status: 'Converted to Decorative SKU'
+            })
             .eq('architect_name', detailsModal.architectName)
             .eq('product_sku', row.product_sku)
             .eq('claim_no', row.claim_no);
 
-          if (deleteErr) throw deleteErr;
+          if (updateSourceErr) throw updateSourceErr;
         } else {
           const sourceRate = parseFloat(row.matrix_rate || 0);
           const newPayout = newSheets * sourceRate;
@@ -426,6 +464,12 @@ const ArchitectAccounts = () => {
       }
 
       showToast(`✅ Successfully transferred ${qtyToTransfer} sheets with ${targetPercentage} commission!`, "success");
+      if (transferState.reconversionReason.trim()) {
+        await logTelemetry(
+          'RECONVERT_NATURE_SIGNATURE',
+          `Reconverted '${transferState.sourceSku}' (${qtyToTransfer} sheets) to '${transferState.targetSku}'. Reason: ${transferState.reconversionReason.trim()}`
+        );
+      }
       setTransferState(prev => ({ ...prev, show: false, transferQty: '', targetSku: '', loading: false }));
       
       if (typeof fetchArchitectSummary === 'function') {
@@ -468,7 +512,11 @@ const ArchitectAccounts = () => {
         return merged;
       });
 
-      setRawLedgerData(ledgerRes.data || []);
+      // Conversion source rows are retained at zero only as an upload safeguard.
+      // They must not appear anywhere in account/product UI summaries.
+      setRawLedgerData((ledgerRes.data || []).filter(row =>
+        Number(row.total_eligible_sheets || row.totalSheets || 0) > 0
+      ));
       setRawRemittanceData(remittanceRes.data || []);
     } catch (err) {
       console.error('Error compiling database rows from ledger datasets:', err.message);
@@ -824,6 +872,11 @@ const ArchitectAccounts = () => {
       return skuMatch || sizeMatch;
     });
 
+  // Display-only label for the conversion picker. The original SKU stays intact
+  // for search, selection, and every backend/ledger operation.
+  const getTargetSkuDisplayLabel = (sku) => String(sku || '')
+    .replace(/\b(32|40)\s*mm\b/gi, (_, size) => `${size} sq ft.`);
+
   // Selected Target Product Rate (matches both SKU and active conversion tab percentage)
   const selectedTargetProduct = decorativeMasterList.find(p => 
     p.sku === transferState.targetSku && matchesConversionTab(p, conversionTab)
@@ -922,8 +975,10 @@ const ArchitectAccounts = () => {
                     
                     <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13.5px', tableLayout: 'fixed' }}>
                       <tbody>
-                        {Object.entries(data.skus).map(([sku, total], idx) => {
+                        {Object.entries(data.skus).map(([sku, skuData], idx) => {
+                          const total = skuData.total;
                           const isNaturesSignature = /NATURE'?S?[\s_]*SIGNATURE/i.test(sku || '');
+                          const isAlreadyConverted = skuData.isConverted;
                           return (
                             <tr key={sku} style={{ borderBottom: idx === Object.keys(data.skus).length - 1 ? 'none' : '1px solid #f1f5f9' }}>
                               <td colSpan={2} style={{ padding: '12px 18px' }}>
@@ -959,26 +1014,20 @@ const ArchitectAccounts = () => {
                                     {isNaturesSignature && (
                                       <button 
                                         onClick={() => {
-                                          setTransferState({
-                                            show: true,
-                                            loading: false,
-                                            sourceSku: sku,
-                                            maxQty: total,
-                                            targetSku: '',
-                                            transferQty: total.toString()
-                                          });
-                                          setConversionTab('7%');
-                                          setTargetSkuSearch('');
-                                          setTargetDropdownOpen(false);
+                                          if (isAlreadyConverted) {
+                                            setReconversionModal({ show: true, sourceSku: sku, maxQty: total, reason: '' });
+                                            return;
+                                          }
+                                          openTransferModal(sku, total);
                                         }}
                                         style={{
-                                          background: '#0284c7', color: '#ffffff', border: 'none',
+                                          background: isAlreadyConverted ? '#d97706' : '#0284c7', color: '#ffffff', border: 'none',
                                           borderRadius: '6px', padding: '6px 12px', fontSize: '12px', cursor: 'pointer',
                                           fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: '5px',
-                                          boxShadow: '0 2px 4px rgba(2, 132, 199, 0.2)', flexShrink: 0
+                                          boxShadow: isAlreadyConverted ? '0 2px 4px rgba(217, 119, 6, 0.2)' : '0 2px 4px rgba(2, 132, 199, 0.2)', flexShrink: 0
                                         }}
                                       >
-                                        ✏️ Convert Product
+                                        {isAlreadyConverted ? '↻ Reconvert' : '✏️ Convert Product'}
                                       </button>
                                     )}
                                   </div>
@@ -993,6 +1042,40 @@ const ArchitectAccounts = () => {
                   </div>
                 ))
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Reason is mandatory before an already converted SKU can be converted again. */}
+      {reconversionModal.show && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(15, 23, 42, 0.65)', backdropFilter: 'blur(4px)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 10025 }}>
+          <div style={{ width: '460px', maxWidth: '92vw', background: '#ffffff', borderRadius: '14px', padding: '24px', boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.3)' }}>
+            <h3 style={{ margin: 0, color: '#0f172a', fontSize: '18px' }}>Already Converted Product</h3>
+            <p style={{ margin: '10px 0 16px', color: '#475569', fontSize: '13.5px', lineHeight: 1.5 }}>
+              This sheet has already been converted. Please enter the reason for converting it again.
+            </p>
+            <textarea
+              value={reconversionModal.reason}
+              onChange={(event) => setReconversionModal(prev => ({ ...prev, reason: event.target.value }))}
+              placeholder="Enter reconversion reason..."
+              rows={4}
+              style={{ width: '100%', boxSizing: 'border-box', resize: 'vertical', border: '1px solid #cbd5e1', borderRadius: '8px', padding: '10px', fontSize: '13px', outline: 'none' }}
+            />
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '18px' }}>
+              <button onClick={() => setReconversionModal({ show: false, sourceSku: '', maxQty: 0, reason: '' })} style={{ border: '1px solid #cbd5e1', background: '#ffffff', color: '#475569', borderRadius: '7px', padding: '9px 14px', cursor: 'pointer', fontWeight: 600 }}>
+                Cancel
+              </button>
+              <button
+                disabled={!reconversionModal.reason.trim()}
+                onClick={() => {
+                  openTransferModal(reconversionModal.sourceSku, reconversionModal.maxQty, reconversionModal.reason.trim());
+                  setReconversionModal({ show: false, sourceSku: '', maxQty: 0, reason: '' });
+                }}
+                style={{ border: 'none', background: reconversionModal.reason.trim() ? '#d97706' : '#cbd5e1', color: '#ffffff', borderRadius: '7px', padding: '9px 14px', cursor: reconversionModal.reason.trim() ? 'pointer' : 'not-allowed', fontWeight: 600 }}
+              >
+                Continue to Reconvert
+              </button>
             </div>
           </div>
         </div>
@@ -1113,8 +1196,8 @@ const ArchitectAccounts = () => {
               <div style={{ position: 'relative' }}>
                 <input
                   type="text"
-                  placeholder="🔍 Type product name, code, or thickness (e.g. Duro Teak, 1mm)..."
-                  value={targetSkuSearch || transferState.targetSku}
+                  placeholder="🔍 Type product name"
+                  value={targetSkuSearch || getTargetSkuDisplayLabel(transferState.targetSku)}
                   onFocus={() => setTargetDropdownOpen(true)}
                   onChange={(e) => {
                     setTargetSkuSearch(e.target.value);
@@ -1177,7 +1260,9 @@ const ArchitectAccounts = () => {
                         key={`${item.sku}-${item.percentage || ''}`}
                         onClick={() => {
                           setTransferState(prev => ({ ...prev, targetSku: item.sku }));
-                          setTargetSkuSearch(item.sku);
+                          // Keep the raw SKU in transferState for backend operations;
+                          // leaving search empty makes the input show its UI-only label.
+                          setTargetSkuSearch('');
                           setTargetDropdownOpen(false);
                         }}
                         style={{
@@ -1192,8 +1277,7 @@ const ArchitectAccounts = () => {
                         }}
                       >
                         <div style={{ flex: 1, minWidth: 0, paddingRight: '10px', wordBreak: 'break-word' }}>
-                          <span style={{ fontWeight: 600, color: '#0f172a' }}>{item.sku}</span>
-                          {item.size && <span style={{ marginLeft: '8px', color: '#64748b', fontSize: '12px' }}>({item.size})</span>}
+                          <span style={{ fontWeight: 600, color: '#0f172a' }}>{getTargetSkuDisplayLabel(item.sku)}</span>
                         </div>
                         <span style={{ fontWeight: 600, color: '#059669', fontSize: '12.5px', flexShrink: 0 }}>
                           ₹{parseFloat(item.price || 0).toLocaleString('en-IN')}/sheet
