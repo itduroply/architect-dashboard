@@ -73,6 +73,7 @@ export default function Sidebar() {
     if (p.includes('/accounts')) return 'accounts';
     if (p.includes('/remittance')) return 'remittance';
     if (p.includes('/claims')) return 'claims';
+    if (p.includes('/sheet-gap')) return 'sheet-gap';
     if (p.includes('/pan-architect')) return 'pan-architect';
     if (p.includes('/commission')) return 'commission'; 
     if (p.includes('/payout')) return 'payout'; 
@@ -92,6 +93,7 @@ export default function Sidebar() {
       accounts: '/app/accounts',
       remittance: '/app/remittance',
       claims: '/app/claims',
+      'sheet-gap': '/app/sheet-gap',
       'pan-architect': '/app/pan-architect', 
       profile: '/app/profile',
       master: '/app/master',
@@ -138,7 +140,7 @@ export default function Sidebar() {
   const showQuerySection = hasAccess('query');
   const showEligibilitySection = hasAccess('peligible');
   const showVenturaSection = hasAccess('ventura');
-  const showAccountsSection = hasAccess('accounts') || hasAccess('pan-architect') || hasAccess('payout') || hasAccess('remittance') || hasAccess('claims') || hasAccess('commission');
+  const showAccountsSection = hasAccess('accounts') || hasAccess('pan-architect') || hasAccess('payout') || hasAccess('remittance') || hasAccess('claims') || hasAccess('commission') || hasAccess('sheet-gap');
 
   return (
     <nav id="sidebar" style={{ display: 'flex', flexDirection: 'column', height: '100vh', overflow: 'hidden' }}>
@@ -311,6 +313,16 @@ export default function Sidebar() {
                 onClick={() => handleNavigation('claims')}
               >
                 <span className="sb-icon">🔗</span> Claim Processor
+              </div>
+            )}
+
+            {hasAccess('sheet-gap') && (
+              <div
+                className={getNavItemClass('sheet-gap')}
+                id="nav-sheet-gap"
+                onClick={() => handleNavigation('sheet-gap')}
+              >
+                <span className="sb-icon">⚠️</span> Architect Uncounted Sheets
               </div>
             )}
 

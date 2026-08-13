@@ -20,6 +20,7 @@ import ArchitectAccounts from './components/pages/ArchitectAccounts';
 import RemittanceEntry from './components/pages/RemittanceEntry';
 import MyProfile from './components/pages/MyProfile';
 import UploadCalculate from './components/pages/UploadCalculate';
+import SheetGapReport from './components/pages/SheetGapReport';
 
 /* ✅ PROTECTED LAYOUT CONTAINER */
 function ProtectedLayout({ session }) {
@@ -99,6 +100,7 @@ export default function App() {
           <Route path="remittance" element={<RemittanceEntry />} />
           <Route path="profile" element={<MyProfile />} />
           <Route path="claims" element={<UploadCalculate />} />
+          <Route path="sheet-gap" element={<SheetGapReport />} />
           <Route path="pan-architect" element={<PanArchitect />} />
           <Route path="payout" element={<Payout />} />
           <Route path="commission" element={<CommissionLedger />} />

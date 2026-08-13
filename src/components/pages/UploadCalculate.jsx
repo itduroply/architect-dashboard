@@ -47,17 +47,24 @@ const UploadCalculate = () => {
  * The use of hexadecimal escapes satisfies the ESLint no-control-regex rule.
  */const safeFormatDate = (val) => {
   if (!val) return null;
-  
-  // If it's already a Date object, convert directly to clean ISO
-  if (val instanceof Date) return val.toISOString();
 
-  // If it's a string, strip away the timezone text that crashes the database
+  // Excel dates are calendar dates, not instants. Store their local date part
+  // instead of converting to UTC, which otherwise shifts Indian midnight back
+  // by one day (e.g. 08-Apr becomes 07-Apr in the database).
+  if (val instanceof Date) {
+    return `${val.getFullYear()}-${String(val.getMonth() + 1).padStart(2, '0')}-${String(val.getDate()).padStart(2, '0')}`;
+  }
+
   let strVal = String(val).trim();
   strVal = strVal.replace(/\(.*\)/g, '').replace(/GMT[+-]\d+/g, '').replace(/India Standard Time/g, '').trim();
 
-  // Create a new date from the cleaned string
+  const dateOnlyMatch = strVal.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (dateOnlyMatch) return dateOnlyMatch[0];
+
   const d = new Date(strVal);
-  return isNaN(d.getTime()) ? null : d.toISOString();
+  if (Number.isNaN(d.getTime())) return null;
+
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 };
 const sanitizeString = (str) => {
   if (typeof str !== 'string') return str;

@@ -19,6 +19,7 @@ const SIDEBAR_OPTIONS = [
   { id: 'payout', label: '💰 Payout Request', group: 'Accounts' },
   { id: 'remittance', label: '💳 Remittance Entry', group: 'Accounts' },
   { id: 'claims', label: '🔗 Claim Processor', group: 'Accounts' },
+  { id: 'sheet-gap', label: '⚠️ Uncounted Sheets Gap', group: 'Accounts' },
   { id: 'commission', label: '🪙 Qualified Architect Split', group: 'Accounts' },
 ];
 
