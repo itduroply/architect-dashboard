@@ -68,7 +68,17 @@ const UploadCalculate = () => {
 };
 const sanitizeString = (str) => {
   if (typeof str !== 'string') return str;
-  return str.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F]/g, "");
+  return Array.from(str)
+    .filter((character) => {
+      const code = character.charCodeAt(0);
+      return !(
+        code <= 8 ||
+        (code >= 11 && code <= 12) ||
+        (code >= 14 && code <= 31) ||
+        (code >= 127 && code <= 159)
+      );
+    })
+    .join('');
 };
   useEffect(() => {
     if (snackbar.show) {
