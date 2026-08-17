@@ -211,6 +211,16 @@ const isApproved = (status) => {
   return value.startsWith('APPROVE') || value === 'SANCTIONED';
 };
 
+const isLostLead = (lead) =>
+  String(lead?.lead_status || '').trim().toUpperCase() === 'LOST';
+
+// Supabase caps a single request at 1,000 rows.
+const PAGE_SIZE = 1000;
+
+// Claims are pulled per lead id. Small groups keep each request well inside the
+// row cap and the URL length limit.
+const LEAD_ID_GROUP_SIZE = 80;
+
 // Claim dates come from Excel as local calendar dates. Format them in IST so a
 // UTC timestamp such as 2026-04-13T18:30:00.000Z remains 14-Apr-26.
 const formatClaimDate = (value) => {
@@ -227,27 +237,45 @@ const formatClaimDate = (value) => {
   }).format(date);
 };
 
-const fetchAllRows = async (table, columns, orderColumn) => {
-  const pageSize = 1000;
-  const allRows = [];
-  let from = 0;
+// Reads a table past the 1,000 row cap. The exact row count is taken first so
+// every page can be requested in parallel; fetching them one after another is
+// what made this report take tens of seconds to open.
+const fetchAllRows = async (
+  table,
+  columns,
+  orderColumns,
+  applyFilters = (query) => query
+) => {
+  const { count, error: countError } = await applyFilters(
+    supabase.from(table).select(columns, { count: 'exact', head: true })
+  );
 
-  while (true) {
-    const { data, error } = await supabase
-      .from(table)
-      .select(columns)
-      .order(orderColumn)
-      .range(from, from + pageSize - 1);
+  if (countError) throw countError;
 
-    if (error) throw error;
+  const requests = [];
 
-    const page = data || [];
-    allRows.push(...page);
+  for (let from = 0; from < (count || 0); from += PAGE_SIZE) {
+    let query = applyFilters(supabase.from(table).select(columns));
 
-    if (page.length < pageSize) return allRows;
+    // The sort must be total. Paging on a non-unique column (lead_id repeats
+    // per project in leads_master) lets a row appear on two pages and vanish
+    // from the result, which silently drops claims from this report.
+    orderColumns.forEach((column) => {
+      query = query.order(column);
+    });
 
-    from += pageSize;
+    requests.push(
+      query
+        .range(from, from + PAGE_SIZE - 1)
+        .then(({ data, error }) => {
+          if (error) throw error;
+          return data || [];
+        })
+    );
   }
+
+  const pages = await Promise.all(requests);
+  return pages.flat();
 };
 
 export default function SheetGapReport() {
@@ -255,41 +283,71 @@ export default function SheetGapReport() {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [error, setError] = useState('');
+  const [lastUpdated, setLastUpdated] = useState(null);
+  const [lostLeadSheets, setLostLeadSheets] = useState(0);
 
   const loadReport = useCallback(async () => {
     setLoading(true);
     setError('');
 
     try {
-      const [leads, claims, skus, ledger] = await Promise.all([
-        fetchAllRows(
-          'leads_master',
-          'lead_id, linked_architect, state, lead_status',
-          'lead_id'
-        ),
-        fetchAllRows(
-          'dmi_claims',
-          'claim_no, claim_date, lead_id, product_code, approved_qty, status',
-          'claim_no'
+      // Only a lead that carries an architect can create an architect-wise gap,
+      // and those are a few hundred rows out of ~15,000 leads. Filtering on the
+      // server keeps this report from downloading the whole leads and claims
+      // tables on every open.
+      const leads = await fetchAllRows(
+        'leads_master',
+        'lead_id, project_name, linked_architect, state, lead_status',
+        ['lead_id', 'project_name'],
+        (query) => query.not('linked_architect', 'is', null).neq('linked_architect', '')
+      );
+
+      const leadsById = new Map();
+
+      leads.forEach((lead) => {
+        const leadId = String(lead.lead_id || '').trim();
+        if (!leadId) return;
+
+        const existing = leadsById.get(leadId);
+
+        // One lead id repeats once per project. Prefer an active row over a Lost
+        // one so a stale duplicate cannot hide a claim from the report.
+        if (!existing || (isLostLead(existing) && !isLostLead(lead))) {
+          leadsById.set(leadId, lead);
+        }
+      });
+
+      const leadIdGroups = [];
+      const leadIds = Array.from(leadsById.keys());
+
+      for (let index = 0; index < leadIds.length; index += LEAD_ID_GROUP_SIZE) {
+        leadIdGroups.push(leadIds.slice(index, index + LEAD_ID_GROUP_SIZE));
+      }
+
+      const [claimGroups, skus, ledger] = await Promise.all([
+        Promise.all(
+          leadIdGroups.map((group) =>
+            fetchAllRows(
+              'dmi_claims',
+              'claim_no, claim_date, lead_id, product_code, approved_qty, status',
+              ['claim_no'],
+              (query) => query.in('lead_id', group)
+            )
+          )
         ),
         fetchAllRows(
           'product_sku_master',
           'sku, price',
-          'sku'
+          ['sku']
         ),
         fetchAllRows(
           'commission_ledger',
           'claim_no, total_eligible_sheets',
-          'claim_no'
+          ['claim_no']
         ),
       ]);
 
-      const leadsById = new Map(
-        leads.map((lead) => [
-          String(lead.lead_id || '').trim(),
-          lead,
-        ])
-      );
+      const claims = claimGroups.flat();
 
       const priceBySku = new Map(
         skus.map((sku) => [
@@ -312,6 +370,8 @@ export default function SheetGapReport() {
         );
       });
 
+      let lostLeadGapSheets = 0;
+
       const candidateRows = claims.flatMap((claim) => {
         if (!isApproved(claim.status)) return [];
 
@@ -319,12 +379,7 @@ export default function SheetGapReport() {
           String(claim.lead_id || '').trim()
         );
 
-        if (
-          !lead?.linked_architect ||
-          String(lead.lead_status || '').trim().toUpperCase() === 'LOST'
-        ) {
-          return [];
-        }
+        if (!lead?.linked_architect) return [];
 
         const productSku = String(
           claim.product_code || ''
@@ -367,33 +422,16 @@ export default function SheetGapReport() {
           approvedSheets - ledgerSheets
         );
 
-        const hasMmThickness =
-          /\d+\s*mm\b/i.test(productSku);
-
         if (hasPrice && missingSheets <= 0) return [];
 
-        const reasons = [];
+        const gapSheets =
+          missingSheets > 0 ? missingSheets : approvedSheets;
 
-        if (!hasMmThickness) {
-          reasons.push('Product code has no MM thickness');
-        }
-
-        if (!productSku) {
-          reasons.push('Product code is blank');
-        }
-
-        if (!hasPrice && productSku) {
-          reasons.push(
-            'No matching SKU price in Product Master'
-          );
-        }
-
-        if (missingSheets > 0) {
-          reasons.push(
-            ledgerSheets === 0
-              ? 'Ledger has zero sheets / no counted sheets'
-              : `Only ${ledgerSheets} of ${approvedSheets} sheets reached ledger`
-          );
+        // A Lost lead is dropped by the claim processor by design, so its sheets
+        // are reported separately instead of in the architect-wise total.
+        if (isLostLead(lead)) {
+          lostLeadGapSheets += gapSheets;
+          return [];
         }
 
         return [
@@ -405,35 +443,34 @@ export default function SheetGapReport() {
             state: lead.state || 'Unknown',
             productSku:
               productSku || 'Blank product code',
-            sheets:
-              missingSheets > 0
-                ? missingSheets
-                : approvedSheets,
+            sheets: gapSheets,
           },
         ];
       });
 
-      const groupedRows = Object.values(
-        candidateRows.reduce((result, row) => {
-          const key = `${row.architect}__${row.state}__${row.productSku}__${row.reason}`;
-
-          if (!result[key]) {
-            result[key] = { ...row };
-          } else {
-            result[key].sheets += row.sheets;
-          }
-
-          return result;
-        }, {})
+      // One row per claim. Grouping used to merge claims on a key that included
+      // an undefined `reason`, so several claims collapsed into a single row
+      // that still displayed just the first claim number, lead id and date.
+      candidateRows.sort(
+        (first, second) =>
+          String(first.architect).localeCompare(String(second.architect)) ||
+          String(first.claimNo).localeCompare(String(second.claimNo))
       );
 
-      setRows(groupedRows);
+      setRows(candidateRows);
+      setLostLeadSheets(lostLeadGapSheets);
+      setLastUpdated(new Date());
     } catch (err) {
       console.error(
         'Failed to load sheet gap report:',
         err.message
       );
 
+      // Clear the previous result. Keeping it would leave the old totals on
+      // screen next to the error, which reads as up-to-date data.
+      setRows([]);
+      setLostLeadSheets(0);
+      setLastUpdated(null);
       setError(err.message);
     } finally {
       setLoading(false);
@@ -531,6 +568,27 @@ export default function SheetGapReport() {
             >
               Review approved sheets that are not reflected
               in the current count.
+            </p>
+
+            {/* Makes it obvious whether the figures below are from this load. */}
+            <p
+              style={{
+                margin: '4px 0 0',
+                color: '#94a3b8',
+                fontSize: 12,
+              }}
+            >
+              {loading
+                ? 'Reading leads, claims and ledger...'
+                : lastUpdated
+                  ? `Last updated ${new Intl.DateTimeFormat('en-GB', {
+                      timeZone: 'Asia/Kolkata',
+                      day: '2-digit',
+                      month: 'short',
+                      hour: '2-digit',
+                      minute: '2-digit',
+                    }).format(lastUpdated)} IST`
+                  : 'Not loaded yet'}
             </p>
           </div>
 

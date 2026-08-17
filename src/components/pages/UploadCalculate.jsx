@@ -6,6 +6,7 @@ const UploadCalculate = () => {
   // Operational processing states
   const [isUploadingLead, setIsUploadingLead] = useState(false);
   const [isUploadingDmi, setIsUploadingDmi] = useState(false);
+  const [isUploadingArchitectMob, setIsUploadingArchitectMob] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [isPushingLedger, setIsPushingLedger] = useState(false);
   
@@ -15,6 +16,7 @@ const UploadCalculate = () => {
   // File Presence and data memory caches
   const [leadFileLoaded, setLeadFileLoaded] = useState(false);
   const [dmiFileLoaded, setDmiFileLoaded] = useState(false);
+  const [architectMobFileLoaded, setArchitectMobFileLoaded] = useState(false);
   const [showResults, setShowResults] = useState(false);
   const [activeTab, setActiveTab] = useState('claim-output');
 
@@ -102,6 +104,131 @@ const sanitizeString = (str) => {
       .trim()
       .toLocaleLowerCase('en-US')
       .replace(/[^a-z0-9]/g, '');
+  };
+
+  const normalizeArchitectId = (value) => String(value ?? '')
+    .trim()
+    .replace(/\.0$/, '')
+    .replace(/\s+/g, '');
+
+  const getArchitectIdFromLinkedArchitect = (value) =>
+    normalizeArchitectId(String(value ?? '').split('|')[0]);
+
+  const normalizeMobileNumber = (value) => {
+    let digits = String(value ?? '').trim().replace(/\.0$/, '').replace(/\D/g, '');
+    if (digits.startsWith('91') && digits.length === 12) digits = digits.slice(2);
+    return digits;
+  };
+
+  const handleArchitectMobUpload = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    setIsUploadingArchitectMob(true);
+    setUploadProgress(0);
+    showNotification('Parsing Architect ID and mobile-number spreadsheet...', 'info');
+
+    const reader = new FileReader();
+    reader.onload = async (evt) => {
+      try {
+        const workbook = XLSX.read(evt.target.result, { type: 'binary' });
+        const worksheet = workbook.Sheets[workbook.SheetNames[0]];
+        const rawRows = XLSX.utils.sheet_to_json(worksheet, { defval: '' });
+        if (!rawRows.length) throw new Error('The selected Architect Mobile file contains no rows.');
+
+        const rowsByArchitectId = new Map();
+        const architectByMobile = new Map();
+        rawRows.forEach((row, index) => {
+          const archId = normalizeArchitectId(row['Arct. ID'] || row['Architect ID'] || row.arch_id || row['Unique Arct.']);
+          const mobileNo = normalizeMobileNumber(row['Mobile No*'] || row['Mobile No'] || row.mobile_no || row['__EMPTY_3']);
+          if (!archId || !mobileNo) return;
+          if (!/^\d{10}$/.test(mobileNo)) throw new Error(`Invalid mobile number on row ${index + 2}. Please provide a 10-digit mobile number.`);
+
+          const previousMobile = rowsByArchitectId.get(archId)?.mobile_no;
+          const previousArchitect = architectByMobile.get(mobileNo);
+          if ((previousMobile && previousMobile !== mobileNo) || (previousArchitect && previousArchitect !== archId)) {
+            throw new Error(`Conflicting Architect ID/mobile mapping found on row ${index + 2}.`);
+          }
+
+          rowsByArchitectId.set(archId, { arch_id: archId, mobile_no: mobileNo });
+          architectByMobile.set(mobileNo, archId);
+        });
+
+        const architectMobRows = Array.from(rowsByArchitectId.values());
+        if (!architectMobRows.length) throw new Error('No valid Architect ID and mobile-number pairs were found.');
+
+        const CHUNK_SIZE = 500;
+        for (let from = 0; from < architectMobRows.length; from += CHUNK_SIZE) {
+          const chunk = architectMobRows.slice(from, from + CHUNK_SIZE);
+          const { error } = await supabase.from('architect_mob').upsert(chunk, { onConflict: 'arch_id' });
+          if (error) throw error;
+          setUploadProgress(Math.round(((from + chunk.length) / architectMobRows.length) * 100));
+        }
+
+        // Uploading the mapping must also repair old ledger rows. Those claims
+        // are skipped by the claim processor to protect settled transactions,
+        // so their mobile number can only be filled through this backfill.
+        const { count: ledgerCount, error: ledgerCountError } = await supabase
+          .from('commission_ledger')
+          .select('claim_no', { count: 'exact', head: true });
+        if (ledgerCountError) throw ledgerCountError;
+
+        const ledgerPages = await Promise.all(
+          Array.from({ length: Math.ceil((ledgerCount || 0) / 1000) }, (_, page) =>
+            supabase
+              .from('commission_ledger')
+              .select('claim_no, architect_name, architect_mobile')
+              .order('claim_no')
+              .range(page * 1000, page * 1000 + 999)
+              .then(({ data, error }) => {
+                if (error) throw error;
+                return data || [];
+              })
+          )
+        );
+
+        const mobileByArchitectId = new Map(
+          architectMobRows.map((row) => [row.arch_id, row.mobile_no])
+        );
+        const ledgerMobileUpdates = ledgerPages
+          .flat()
+          .map((row) => ({
+            claimNo: row.claim_no,
+            currentMobile: normalizeMobileNumber(row.architect_mobile),
+            matchedMobile: mobileByArchitectId.get(
+              getArchitectIdFromLinkedArchitect(row.architect_name)
+            ) || '',
+          }))
+          .filter(({ claimNo, currentMobile, matchedMobile }) =>
+            claimNo && matchedMobile && currentMobile !== matchedMobile
+          );
+
+        const LEDGER_UPDATE_BATCH_SIZE = 100;
+        for (let from = 0; from < ledgerMobileUpdates.length; from += LEDGER_UPDATE_BATCH_SIZE) {
+          const updateBatch = ledgerMobileUpdates.slice(from, from + LEDGER_UPDATE_BATCH_SIZE);
+          await Promise.all(updateBatch.map(({ claimNo, matchedMobile }) =>
+            supabase
+              .from('commission_ledger')
+              .update({ architect_mobile: matchedMobile })
+              .eq('claim_no', claimNo)
+              .then(({ error }) => {
+                if (error) throw error;
+              })
+          ));
+        }
+
+        setArchitectMobFileLoaded(true);
+        showNotification(`Architect mobile records synced: ${architectMobRows.length} unique Architect IDs. ${ledgerMobileUpdates.length} ledger rows updated.`, 'success');
+      } catch (err) {
+        console.error(err);
+        showNotification(`Architect mobile upload failed: ${err.message}`, 'error');
+      } finally {
+        setIsUploadingArchitectMob(false);
+        setUploadProgress(0);
+        e.target.value = '';
+      }
+    };
+    reader.readAsBinaryString(file);
   };
 
   // Parsing and uploading Lead Master records using high-performance mapping lists
@@ -396,6 +523,7 @@ const runClaimProcessor = async () => {
     // 2. Fetch dataset tables
     const dbLeads = await fetchAllRecordsOptimized('leads_master', 'lead_id, linked_architect,state,lead_status', 'lead_id');
     const dbClaims = await fetchAllRecordsOptimized('dmi_claims', 'claim_no, lead_id, status, product_code, approved_qty,claim_date', 'claim_no');
+    const dbArchitectMob = await fetchAllRecordsOptimized('architect_mob', 'arch_id, mobile_no', 'arch_id');
     // The ledger is transactional. Once a claim has been settled (or its Nature's
     // Signature volume has been converted), importing the same source files must
     // never recreate or overwrite that ledger transaction.
@@ -484,6 +612,12 @@ const runClaimProcessor = async () => {
       }
     });
 
+    const architectMobileMap = new Map(
+      dbArchitectMob
+        .map((row) => [normalizeArchitectId(row.arch_id), normalizeMobileNumber(row.mobile_no)])
+        .filter(([archId, mobileNo]) => archId && mobileNo)
+    );
+
     const skuPriceMap = {};
     dbSkus.forEach(s => {
       if (s.sku) {
@@ -563,6 +697,8 @@ const runClaimProcessor = async () => {
         }
         return rawArchitect.toString().trim();
       })();
+      const architectId = getArchitectIdFromLinkedArchitect(matchingLead.linked_architect);
+      const architectMobile = architectMobileMap.get(architectId) || null;
 
       const safeClaimDate = (() => {
         if (!claim || !claim.claim_date) return null;
@@ -625,6 +761,8 @@ const runClaimProcessor = async () => {
         claim_no: claim.claim_no,
         lead_id: claimLeadId,
         architect: architectName,
+        architectId,
+        architectMobile,
         claim_date: safeClaimDate,
         state: leadState,
         lead_status: leadStatus,
@@ -659,6 +797,7 @@ const runClaimProcessor = async () => {
       for (let i = 0; i < calculatedOutputs.length; i += batchSize) {
         const chunk = calculatedOutputs.slice(i, i + batchSize).map(row => ({
           architect_name: row.architect,
+          architect_mobile: row.architectMobile,
           claim_no: row.claim_no,
           lead_id: row.lead_id,
           state: row.state,
@@ -718,6 +857,7 @@ const runClaimProcessor = async () => {
     try {
       const ledgerPayload = payoutCalcData.map(row => ({
         architect_name: row.architect,               // Swapped beneficiary_name -> architect_name
+        architect_mobile: row.architectMobile,
         claim_no: row.claim_no,                       // Line-item claim constraint tracking
         lead_id: row.lead_id,
         product_sku: row.product,
@@ -877,7 +1017,7 @@ const runClaimProcessor = async () => {
       </div>
 
       {/* Upload Drag Zones Grid Section */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', marginBottom: '20px' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '16px', marginBottom: '20px' }}>
 
         {/* ZONE A: Lead Master Ingestion */}
         <div className="card" style={{ border: '1px solid #e5e7eb', borderRadius: '8px', padding: '16px', background: '#fff' }}>
@@ -909,6 +1049,36 @@ const runClaimProcessor = async () => {
               <div className="s-dot" style={{ width: '8px', height: '8px', borderRadius: '50%', background: leadFileLoaded ? '#10b981' : '#d1d5db' }}></div>
               <span id="statusLeadTxt" style={{ fontSize: '12px', color: '#4b5563' }}>
                 {leadFileLoaded ? 'New Lead Master file database active' : 'Using historical backend rows unless dynamic sheets are dropped'}
+              </span>
+            </div>
+          </div>
+        </div>
+
+
+
+
+        {/* ZONE C: Architect Mobile Mapping */}
+        <div className="card" style={{ border: '1px solid #e5e7eb', borderRadius: '8px', padding: '16px', background: '#fff' }}>
+          <div className="card-hd" style={{ display: 'flex', gap: '10px', marginBottom: '12px' }}>
+            <div className="card-icon" style={{ fontSize: '20px' }}>📱</div>
+            <div>
+              <div className="card-title" style={{ fontWeight: 600, fontSize: '14px' }}>Dataset 3 — Architect Mobile Numbers</div>
+              <div className="card-sub" style={{ fontSize: '12px', color: '#6b7280' }}>Matches `Arct. ID` to the Architect ID in Lead Master</div>
+            </div>
+          </div>
+          <div className="card-body">
+            <div className="dropzone" id="dzArchitectMob" style={{ border: '2px dashed #d1d5db', padding: '24px', borderRadius: '8px', textAlign: 'center', position: 'relative', background: isUploadingArchitectMob ? '#f3f4f6' : 'transparent' }}>
+              <input type="file" id="fileArchitectMob" accept=".xlsx,.xls,.csv" onChange={handleArchitectMobUpload} disabled={isUploadingArchitectMob} style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', opacity: 0, cursor: 'pointer' }} />
+              <span className="dz-icon" style={{ fontSize: '32px', display: 'block', marginBottom: '8px' }}>📱</span>
+              <div className="dz-title" style={{ fontWeight: 500, fontSize: '14px' }}>
+                {isUploadingArchitectMob ? `Uploading to Database (${uploadProgress}%)` : 'Drop Architect Mobile Excel'}
+              </div>
+              <div className="dz-sub" style={{ fontSize: '11px', color: '#9ca3af' }}>.xlsx · .xls · .csv — Arct. ID · Mobile No*</div>
+            </div>
+            <div className="status" style={{ marginTop: '10px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+              <div className="s-dot" style={{ width: '8px', height: '8px', borderRadius: '50%', background: architectMobFileLoaded ? '#10b981' : '#d1d5db' }}></div>
+              <span style={{ fontSize: '12px', color: '#4b5563' }}>
+                {architectMobFileLoaded ? 'Architect ID/mobile mapping synced' : 'Upload before processing claims to write matched mobile numbers'}
               </span>
             </div>
           </div>

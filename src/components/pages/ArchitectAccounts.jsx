@@ -547,16 +547,23 @@ const ArchitectAccounts = () => {
           architect_name: rawName, 
           state: row.state || 'Unknown',
           total_sheets: 0,
-          raw_pool_payout: 0,
-          credited_amount: 0, 
-          hasNaturesSignature: false,
-          associatedNames: new Set() 
+           raw_pool_payout: 0,
+           credited_amount: 0,
+           hasNaturesSignature: false,
+           associatedNames: new Set(),
+           leadIds: new Set(),
+           architectMobiles: new Set(),
         };
       }
   
       aggregationMap[archId].total_sheets += sheets;
-      aggregationMap[archId].raw_pool_payout += payout;
-      aggregationMap[archId].associatedNames.add(rawName);
+       aggregationMap[archId].raw_pool_payout += payout;
+       aggregationMap[archId].associatedNames.add(rawName);
+
+       const leadId = String(row.lead_id || '').trim();
+       const architectMobile = String(row.architect_mobile || row.mobile_no || '').trim();
+       if (leadId) aggregationMap[archId].leadIds.add(leadId);
+       if (architectMobile) aggregationMap[archId].architectMobiles.add(architectMobile);
 
       const upperSku = (row.product_sku || '').toUpperCase();
       if ((upperSku.includes('NATURES SIGNATURE') || upperSku.includes('NATURE SIGNATURE')) && sheets > 0) {
@@ -583,6 +590,8 @@ const ArchitectAccounts = () => {
 
       return {
         ...record,
+        leadIds: Array.from(record.leadIds).sort(),
+        architectMobiles: Array.from(record.architectMobiles).sort(),
         isEligible,
         actualPayoutAllowed,
         balance_due: calculatedOutstanding,
@@ -731,9 +740,11 @@ const ArchitectAccounts = () => {
 
     const summaryRows = filteredArchitects.map((architect, index) => ({
       Rank: index + 1,
-      'Architect Name': getArchitectDisplayName(architect.architect_name),
-      'Account Number': architect.architect_id,
-      Sheets: Number(architect.total_sheets || 0),
+       'Architect Name': getArchitectDisplayName(architect.architect_name),
+       'Account Number': architect.architect_id,
+       'Mobile Number': architect.architectMobiles.join(', ') || '—',
+       'Lead IDs': architect.leadIds.join(', ') || '—',
+       Sheets: Number(architect.total_sheets || 0),
       'Pool Payout': Number(architect.actualPayoutAllowed || 0),
       Paid: Number(architect.credited_amount || 0),
       State: architect.state || 'Unknown',
@@ -749,7 +760,7 @@ const ArchitectAccounts = () => {
     const summarySheet = XLSX.utils.json_to_sheet(summaryRows);
     summarySheet['!autofilter'] = { ref: summarySheet['!ref'] || 'A1' };
     summarySheet['!freeze'] = { xSplit: 0, ySplit: 1 };
-    summarySheet['!cols'] = [{ wch: 8 }, { wch: 30 }, { wch: 18 }, { wch: 12 }, { wch: 16 }, { wch: 14 }, { wch: 20 }, { wch: 16 }, { wch: 20 }, { wch: 55 }];
+    summarySheet['!cols'] = [{ wch: 8 }, { wch: 30 }, { wch: 18 }, { wch: 18 }, { wch: 35 }, { wch: 12 }, { wch: 16 }, { wch: 14 }, { wch: 20 }, { wch: 16 }, { wch: 20 }, { wch: 55 }];
     XLSX.utils.book_append_sheet(workbook, summarySheet, 'Architect Accounts');
     XLSX.writeFile(workbook, `Architect_Accounts_Report_${new Date().toISOString().slice(0, 10)}.xlsx`);
 
@@ -814,7 +825,9 @@ const ArchitectAccounts = () => {
     const searchString = filters.search?.toLowerCase() || '';
     const nameMatch = (row.architect_name?.toLowerCase() || '').includes(searchString);
     const idMatch = (row.architect_id?.toLowerCase() || '').includes(searchString);
-    const matchesSearch = nameMatch || idMatch;
+    const mobileMatch = row.architectMobiles?.some((mobile) => mobile.toLowerCase().includes(searchString));
+    const leadIdMatch = row.leadIds?.some((leadId) => leadId.toLowerCase().includes(searchString));
+    const matchesSearch = nameMatch || idMatch || mobileMatch || leadIdMatch;
 
     const matchesElig =
       filters.eligibility === '' ||
@@ -1539,14 +1552,16 @@ const ArchitectAccounts = () => {
               <thead>
                 <tr style={{ background: '#f3f4f6', borderBottom: '2px solid #e5e7eb' }}>
                   <th style={{ padding: '10px 12px', width: '50px', textAlign: 'center' }}>Rank</th>
-                  <th style={{ padding: '10px 12px', width: '30%' }}>Architect Name</th>
-                  <th style={{ padding: '10px 12px', width: '15%' }}>Account Number</th>
-                  <th style={{ padding: '10px 12px', width: '10%', textAlign: 'right' }}>Sheets</th>
-                  <th style={{ padding: '10px 12px', width: '13%', textAlign: 'right' }}>Pool Payout</th>
-                  <th style={{ padding: '10px 12px', width: '13%', textAlign: 'right' }}>Paid</th>
-                  <th style={{ padding: '10px 12px', textAlign: 'left', width: '16%' }}>State</th>
-                  <th style={{ padding: '10px 12px', width: '13%', textAlign: 'right' }}>Balance</th>
-                  <th style={{ padding: '10px 12px', width: '16%', textAlign: 'center' }}>Eligibility Status</th>
+                  <th style={{ padding: '10px 12px', width: '19%' }}>Architect Name</th>
+                  <th style={{ padding: '10px 12px', width: '11%' }}>Account Number</th>
+                  <th style={{ padding: '10px 12px', width: '11%' }}>Mobile Number</th>
+                  <th style={{ padding: '10px 12px', width: '13%' }}>Lead ID</th>
+                  <th style={{ padding: '10px 12px', width: '7%', textAlign: 'right' }}>Sheets</th>
+                  <th style={{ padding: '10px 12px', width: '10%', textAlign: 'right' }}>Pool Payout</th>
+                  <th style={{ padding: '10px 12px', width: '9%', textAlign: 'right' }}>Paid</th>
+                  <th style={{ padding: '10px 12px', textAlign: 'left', width: '9%' }}>State</th>
+                  <th style={{ padding: '10px 12px', width: '10%', textAlign: 'right' }}>Balance</th>
+                  <th style={{ padding: '10px 12px', width: '12%', textAlign: 'center' }}>Eligibility Status</th>
                 </tr>
               </thead>
               <tbody>
@@ -1601,6 +1616,12 @@ const ArchitectAccounts = () => {
                     
                     <td style={{ padding: '10px 12px', color: '#4b5563', fontWeight: '500', fontSize: '12.5px' }}>
                       {row.architect_id}
+                    </td>
+                    <td style={{ padding: '10px 12px', color: '#4b5563', fontSize: '12px', overflowWrap: 'anywhere' }} title={row.architectMobiles.join(', ')}>
+                      {row.architectMobiles.join(', ') || '—'}
+                    </td>
+                    <td style={{ padding: '10px 12px', color: '#4b5563', fontSize: '12px', overflowWrap: 'anywhere' }} title={row.leadIds.join(', ')}>
+                      {row.leadIds.join(', ') || '—'}
                     </td>
                     <td style={{ padding: '10px 12px', textAlign: 'right', color: '#374151' }}>{row.total_sheets.toFixed(1)}</td>
                     <td style={{ padding: '10px 12px', textAlign: 'right', fontWeight: 600, color: row.isEligible ? '#059669' : '#6b7280', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
