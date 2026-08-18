@@ -7,6 +7,7 @@ const UploadCalculate = () => {
   const [isUploadingLead, setIsUploadingLead] = useState(false);
   const [isUploadingDmi, setIsUploadingDmi] = useState(false);
   const [isUploadingArchitectMob, setIsUploadingArchitectMob] = useState(false);
+  const [isUploadingDgoInfo, setIsUploadingDgoInfo] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [isPushingLedger, setIsPushingLedger] = useState(false);
   
@@ -17,8 +18,14 @@ const UploadCalculate = () => {
   const [leadFileLoaded, setLeadFileLoaded] = useState(false);
   const [dmiFileLoaded, setDmiFileLoaded] = useState(false);
   const [architectMobFileLoaded, setArchitectMobFileLoaded] = useState(false);
+  const [dgoInfoFileLoaded, setDgoInfoFileLoaded] = useState(false);
   const [showResults, setShowResults] = useState(false);
   const [activeTab, setActiveTab] = useState('claim-output');
+  // Architect Mobile mapping is only refreshed ~2x/month, so it stays tucked
+  // away as an optional expandable panel instead of a full-size drop zone.
+  const [showArchitectMobPanel, setShowArchitectMobPanel] = useState(false);
+  // DGO Info (login id / mobile per sales staff) is also only refreshed ~2x/month.
+  const [showDgoInfoPanel, setShowDgoInfoPanel] = useState(false);
 
   // Interactive Snackbar Feedback Management
   const [snackbar, setSnackbar] = useState({ show: false, message: '', type: 'success' });
@@ -112,6 +119,10 @@ const sanitizeString = (str) => {
     .replace(/\s+/g, '');
 
   const getArchitectIdFromLinkedArchitect = (value) =>
+    normalizeArchitectId(String(value ?? '').split('|')[0]);
+
+  // leads_master.lead_created_by is stored as "LOGINID | Name" (e.g. "D10678 | Anish . Sharma").
+  const getLoginIdFromLeadCreatedBy = (value) =>
     normalizeArchitectId(String(value ?? '').split('|')[0]);
 
   const normalizeMobileNumber = (value) => {
@@ -224,6 +235,130 @@ const sanitizeString = (str) => {
         showNotification(`Architect mobile upload failed: ${err.message}`, 'error');
       } finally {
         setIsUploadingArchitectMob(false);
+        setUploadProgress(0);
+        e.target.value = '';
+      }
+    };
+    reader.readAsBinaryString(file);
+  };
+
+  const handleDgoInfoUpload = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    setIsUploadingDgoInfo(true);
+    setUploadProgress(0);
+    showNotification('Parsing DGO Info (login id / mobile) spreadsheet...', 'info');
+
+    const reader = new FileReader();
+    reader.onload = async (evt) => {
+      try {
+        const workbook = XLSX.read(evt.target.result, { type: 'binary' });
+        const worksheet = workbook.Sheets[workbook.SheetNames[0]];
+        const rawRows = XLSX.utils.sheet_to_json(worksheet, { defval: '' });
+        if (!rawRows.length) throw new Error('The selected DGO Info file contains no rows.');
+
+        // Required-field columns in the source sheet are headed with a trailing
+        // "*" (e.g. "LOGINID*", "MOBILENO*"), so both forms must be checked.
+        const cell = (row, key) => {
+          const value = row[`${key}*`] ?? row[key];
+          return value != null ? String(value) : null;
+        };
+
+        const rowsByLoginId = new Map();
+        rawRows.forEach((row) => {
+          const loginId = normalizeArchitectId(cell(row, 'LOGINID') || row['Login ID'] || row.loginid);
+          const mobileNo = normalizeMobileNumber(cell(row, 'MOBILENO') || row['Mobile No'] || row.mobileno);
+          if (!loginId) return;
+
+          rowsByLoginId.set(loginId, {
+            loginid: loginId,
+            designation: sanitizeString(cell(row, 'DESIGNATION')),
+            orglvl: sanitizeString(cell(row, 'ORGLVL')),
+            employeecode: sanitizeString(cell(row, 'EMPLOYEECODE')),
+            parentcode: sanitizeString(cell(row, 'PARENTCODE')),
+            firstname: sanitizeString(cell(row, 'FIRSTNAME')),
+            middlename: sanitizeString(cell(row, 'MIDDLENAME')),
+            lastname: sanitizeString(cell(row, 'LASTNAME')),
+            email: sanitizeString(cell(row, 'EMAIL')),
+            mobileno: mobileNo || null,
+            geoloccode: sanitizeString(cell(row, 'GEOLOCCODE')),
+            multidealerid: sanitizeString(cell(row, 'MULTIDEALERID')),
+            loccode: sanitizeString(cell(row, 'LOCCODE')),
+            locunder: sanitizeString(cell(row, 'LOCUNDER')),
+          });
+        });
+
+        const dgoInfoRows = Array.from(rowsByLoginId.values());
+        if (!dgoInfoRows.length) throw new Error('No valid Login ID rows were found.');
+
+        const CHUNK_SIZE = 500;
+        for (let from = 0; from < dgoInfoRows.length; from += CHUNK_SIZE) {
+          const chunk = dgoInfoRows.slice(from, from + CHUNK_SIZE);
+          const { error } = await supabase.from('dgo_info').upsert(chunk, { onConflict: 'loginid' });
+          if (error) throw error;
+          setUploadProgress(Math.round(((from + chunk.length) / dgoInfoRows.length) * 100));
+        }
+
+        // Uploading the mapping must also repair old ledger rows. Those claims
+        // are skipped by the claim processor to protect settled transactions,
+        // so their created-by mobile number can only be filled through this backfill.
+        const { count: ledgerCount, error: ledgerCountError } = await supabase
+          .from('commission_ledger')
+          .select('claim_no', { count: 'exact', head: true });
+        if (ledgerCountError) throw ledgerCountError;
+
+        const ledgerPages = await Promise.all(
+          Array.from({ length: Math.ceil((ledgerCount || 0) / 1000) }, (_, page) =>
+            supabase
+              .from('commission_ledger')
+              .select('claim_no, lead_created_by, lead_created_by_mobile')
+              .order('claim_no')
+              .range(page * 1000, page * 1000 + 999)
+              .then(({ data, error }) => {
+                if (error) throw error;
+                return data || [];
+              })
+          )
+        );
+
+        const mobileByLoginId = new Map(
+          dgoInfoRows.map((row) => [row.loginid, row.mobileno])
+        );
+        const ledgerMobileUpdates = ledgerPages
+          .flat()
+          .map((row) => ({
+            claimNo: row.claim_no,
+            currentMobile: normalizeMobileNumber(row.lead_created_by_mobile),
+            matchedMobile: mobileByLoginId.get(
+              getLoginIdFromLeadCreatedBy(row.lead_created_by)
+            ) || '',
+          }))
+          .filter(({ claimNo, currentMobile, matchedMobile }) =>
+            claimNo && matchedMobile && currentMobile !== matchedMobile
+          );
+
+        const LEDGER_UPDATE_BATCH_SIZE = 100;
+        for (let from = 0; from < ledgerMobileUpdates.length; from += LEDGER_UPDATE_BATCH_SIZE) {
+          const updateBatch = ledgerMobileUpdates.slice(from, from + LEDGER_UPDATE_BATCH_SIZE);
+          await Promise.all(updateBatch.map(({ claimNo, matchedMobile }) =>
+            supabase
+              .from('commission_ledger')
+              .update({ lead_created_by_mobile: matchedMobile })
+              .eq('claim_no', claimNo)
+              .then(({ error }) => {
+                if (error) throw error;
+              })
+          ));
+        }
+
+        setDgoInfoFileLoaded(true);
+        showNotification(`DGO Info synced: ${dgoInfoRows.length} unique Login IDs. ${ledgerMobileUpdates.length} ledger rows updated.`, 'success');
+      } catch (err) {
+        console.error(err);
+        showNotification(`DGO Info upload failed: ${err.message}`, 'error');
+      } finally {
+        setIsUploadingDgoInfo(false);
         setUploadProgress(0);
         e.target.value = '';
       }
@@ -524,6 +659,7 @@ const runClaimProcessor = async () => {
     const dbLeads = await fetchAllRecordsOptimized('leads_master', 'lead_id, linked_architect,state,lead_status,lead_created_by', 'lead_id');
     const dbClaims = await fetchAllRecordsOptimized('dmi_claims', 'claim_no, lead_id, status, product_code, approved_qty,claim_date', 'claim_no');
     const dbArchitectMob = await fetchAllRecordsOptimized('architect_mob', 'arch_id, mobile_no', 'arch_id');
+    const dbDgoInfo = await fetchAllRecordsOptimized('dgo_info', 'loginid, mobileno', 'loginid');
     // The ledger is transactional. Once a claim has been settled (or its Nature's
     // Signature volume has been converted), importing the same source files must
     // never recreate or overwrite that ledger transaction.
@@ -618,6 +754,12 @@ const runClaimProcessor = async () => {
         .filter(([archId, mobileNo]) => archId && mobileNo)
     );
 
+    const dgoInfoMobileMap = new Map(
+      dbDgoInfo
+        .map((row) => [normalizeArchitectId(row.loginid), normalizeMobileNumber(row.mobileno)])
+        .filter(([loginId, mobileNo]) => loginId && mobileNo)
+    );
+
     const skuPriceMap = {};
     dbSkus.forEach(s => {
       if (s.sku) {
@@ -699,6 +841,8 @@ const runClaimProcessor = async () => {
       })();
       const architectId = getArchitectIdFromLinkedArchitect(matchingLead.linked_architect);
       const architectMobile = architectMobileMap.get(architectId) || null;
+      const leadCreatedByLoginId = getLoginIdFromLeadCreatedBy(matchingLead.lead_created_by);
+      const leadCreatedByMobile = dgoInfoMobileMap.get(leadCreatedByLoginId) || null;
 
       const safeClaimDate = (() => {
         if (!claim || !claim.claim_date) return null;
@@ -761,6 +905,7 @@ const runClaimProcessor = async () => {
         claim_no: claim.claim_no,
         lead_id: claimLeadId,
         lead_created_by: matchingLead?.lead_created_by || null,
+        lead_created_by_mobile: leadCreatedByMobile,
         architect: architectName,
         architectId,
         architectMobile,
@@ -802,6 +947,7 @@ const runClaimProcessor = async () => {
           claim_no: row.claim_no,
           lead_id: row.lead_id,
           lead_created_by: row.lead_created_by,
+          lead_created_by_mobile: row.lead_created_by_mobile,
           state: row.state,
           lead_status: row.lead_status,
           claim_date: row.claim_date,
@@ -863,6 +1009,7 @@ const runClaimProcessor = async () => {
         claim_no: row.claim_no,                       // Line-item claim constraint tracking
         lead_id: row.lead_id,
         lead_created_by: row.lead_created_by,
+        lead_created_by_mobile: row.lead_created_by_mobile,
         product_sku: row.product,
         total_eligible_sheets: row.qty,               // Base volume item metric
         matrix_rate: row.rate,
@@ -958,8 +1105,8 @@ const runClaimProcessor = async () => {
   };
 
   return (
-    <div className="page" id="page-claims" style={{ fontFamily: 'Inter, sans-serif', padding: '20px' }}>
-      
+    <div className="page" id="page-claims" style={{ padding: '20px' }}>
+
       {/* Dynamic Floating Snackbar Notification Alerts */}
       {snackbar.show && (
         <div style={{
@@ -967,155 +1114,123 @@ const runClaimProcessor = async () => {
           top: '58px',
           right: '24px',
           zIndex: 9999,
-          background: snackbar.type === 'success' ? '#10b981' : snackbar.type === 'error' ? '#ef4444' : '#3b82f6',
+          background: snackbar.type === 'success' ? 'var(--green)' : snackbar.type === 'error' ? 'var(--red)' : 'var(--blue)',
           color: '#fff',
           padding: '12px 20px',
           borderRadius: '8px',
           fontWeight: 500,
-          boxShadow: '0 10px 15px -3px rgba(0, 0, 0, 0.1)'
+          boxShadow: 'var(--shadow)'
         }}>
           {snackbar.message}
         </div>
       )}
 
       {/* Download action ribbon */}
-      <div className="dl-strip" style={{ display: 'flex', gap: '8px', alignItems: 'center', marginBottom: '16px' }}>
-        <span style={{ fontSize: '11px', color: '#6b7280', marginRight: '4px' }}>Download:</span>
+      <div className="dl-strip">
+        <span style={{ fontSize: '11px', color: 'var(--dim)', marginRight: '4px' }}>Download:</span>
         <button className="btn-dl" onClick={() => exportClaimOutput('output')}>⬇ Claim Output</button>
         <button className="btn-dl" onClick={() => exportClaimOutput('flags')}>⬇ Flags &amp; Issues</button>
         <button className="btn-dl" onClick={() => exportClaimOutput('architect')}>⬇ Architect Summary</button>
-        <div className="dl-sep" style={{ width: '1px', background: '#e5e7eb', height: '16px' }}></div>
+        <div className="dl-sep"></div>
         <button className="btn-dl btn-dl-primary" onClick={() => exportClaimOutput('full')}>⬇ Full Claim Report</button>
       </div>
 
       {/* Information Header Block */}
-      <div style={{
-        background: '#eef3fc', 
-        border: '1px solid #a8c0e8', 
-        borderRadius: '10px', 
-        padding: '14px 18px', 
-        marginBottom: '16px', 
-        display: 'flex', 
-        gap: '18px', 
-        flexWrap: 'wrap', 
-        alignItems: 'flex-start'
-      }}>
-        <div style={{ fontSize: '13px', fontWeight: 600, color: '#1d4ed8', whiteSpace: 'nowrap', marginTop: '2px' }}>
+      <div className="infobox" style={{ marginBottom: '16px', display: 'flex', gap: '18px', flexWrap: 'wrap', alignItems: 'center' }}>
+        <div style={{ fontSize: '13px', fontWeight: 600, whiteSpace: 'nowrap' }}>
           🔗 Automated Claims Engine
         </div>
-        <div style={{ fontSize: '12px', color: '#2050a0', lineHeight: 1.85, flex: 1 }}>
+        <div style={{ fontSize: '12px', lineHeight: 1.85, flex: 1, minWidth: '240px' }}>
           <strong>Step 1 — Configure Rates</strong>: Synced with your dynamic Payout Rate Matrix master schema. &nbsp;·&nbsp;
           <strong>Step 2 — Ingest Relationships</strong>: Drop your Lead Master matching unique Lead IDs with linked Architect metrics. &nbsp;·&nbsp;
           <strong>Step 3 — Compute Allocations</strong>: Hit processing to automatically isolate entries marked with absolute <strong>APPROVED</strong> or <strong>SANCTIONED</strong> statuses, resolve custom dimensions, and build the payout registry.
         </div>
-        <button 
-          className="btn-dl btn-dl-primary" 
-          onClick={runClaimProcessor} 
+        <button
+          className="btn btn-gold"
+          onClick={runClaimProcessor}
           disabled={isProcessing}
-          id="btnRunClaims" 
-          style={{ whiteSpace: 'nowrap', alignSelf: 'center', background: '#2563eb', color: '#fff', border: 'none', padding: '8px 16px', borderRadius: '6px', cursor: 'pointer' }}
+          id="btnRunClaims"
+          style={{ whiteSpace: 'nowrap' }}
         >
           {isProcessing ? '⏳ Computing...' : '⚡ Process Claims'}
         </button>
       </div>
 
       {/* Upload Drag Zones Grid Section */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '16px', marginBottom: '20px' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '16px', marginBottom: '16px' }}>
 
         {/* ZONE A: Lead Master Ingestion */}
-        <div className="card" style={{ border: '1px solid #e5e7eb', borderRadius: '8px', padding: '16px', background: '#fff' }}>
-          <div className="card-hd" style={{ display: 'flex', gap: '10px', marginBottom: '12px' }}>
-            <div className="card-icon" style={{ fontSize: '20px' }}>📋</div>
+        <div className="card">
+          <div className="card-hd">
+            <div className="card-icon">📋</div>
             <div>
-              <div className="card-title" style={{ fontWeight: 600, fontSize: '14px' }}>Dataset 1 — Lead Master</div>
-              <div className="card-sub" style={{ fontSize: '12px', color: '#6b7280' }}>Contains Lead ID · Architect mapping · DMI mapping</div>
+              <div className="card-title" style={{ fontSize: '14px' }}>Dataset 1 — Lead Master</div>
+              <div className="card-sub">Contains Lead ID · Architect mapping · DMI mapping</div>
             </div>
           </div>
           <div className="card-body">
-            <div className="dropzone" id="dzLead" style={{ border: '2px dashed #d1d5db', padding: '24px', borderRadius: '8px', textAlign: 'center', position: 'relative', background: isUploadingLead ? '#f3f4f6' : 'transparent' }}>
-              <input 
-                type="file" 
-                id="fileLeadMaster" 
-                accept=".xlsx,.xls,.csv" 
-                onChange={handleLeadMasterUpload} 
+            <div className={`dropzone${isUploadingLead ? ' uploading' : ''}`} id="dzLead">
+              <input
+                type="file"
+                id="fileLeadMaster"
+                accept=".xlsx,.xls,.csv"
+                onChange={handleLeadMasterUpload}
                 disabled={isUploadingLead}
-                style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', opacity: 0, cursor: 'pointer' }} 
               />
-              <span className="dz-icon" style={{ fontSize: '32px', display: 'block', marginBottom: '8px' }}>📋</span>
-              <div className="dz-title" style={{ fontWeight: 500, fontSize: '14px' }}>
-                {isUploadingLead ? `Uploading to Database (${uploadProgress}%)` : 'Drop Lead Detail Report'}
+              <span className="dz-icon">📋</span>
+              <div className="dz-title">
+                {isUploadingLead ? `Uploading to Database… ${uploadProgress}%` : 'Drop Lead Detail Report'}
               </div>
-              <div className="dz-sub" style={{ fontSize: '11px', color: '#9ca3af' }}>.xlsx · .xls · .csv — Lead ID · Architect · DMI</div>
+              <div className="dz-sub">.xlsx · .xls · .csv — Lead ID · Architect · DMI</div>
+              {isUploadingLead && (
+                <div className="pbar-wrap" style={{ marginTop: '10px' }}>
+                  <div className="pbar" style={{ width: `${uploadProgress}%` }}></div>
+                </div>
+              )}
             </div>
-            
-            <div className="status" id="statusLead" style={{ marginTop: '10px', display: 'flex', alignItems: 'center', gap: '6px' }}>
-              <div className="s-dot" style={{ width: '8px', height: '8px', borderRadius: '50%', background: leadFileLoaded ? '#10b981' : '#d1d5db' }}></div>
-              <span id="statusLeadTxt" style={{ fontSize: '12px', color: '#4b5563' }}>
+
+            <div className={`status ${leadFileLoaded ? 'ok' : ''}`} id="statusLead">
+              <div className="s-dot"></div>
+              <span id="statusLeadTxt">
                 {leadFileLoaded ? 'New Lead Master file database active' : 'Using historical backend rows unless dynamic sheets are dropped'}
               </span>
             </div>
           </div>
         </div>
 
-
-
-
-        {/* ZONE C: Architect Mobile Mapping */}
-        <div className="card" style={{ border: '1px solid #e5e7eb', borderRadius: '8px', padding: '16px', background: '#fff' }}>
-          <div className="card-hd" style={{ display: 'flex', gap: '10px', marginBottom: '12px' }}>
-            <div className="card-icon" style={{ fontSize: '20px' }}>📱</div>
-            <div>
-              <div className="card-title" style={{ fontWeight: 600, fontSize: '14px' }}>Dataset 3 — Architect Mobile Numbers</div>
-              <div className="card-sub" style={{ fontSize: '12px', color: '#6b7280' }}>Matches `Arct. ID` to the Architect ID in Lead Master</div>
-            </div>
-          </div>
-          <div className="card-body">
-            <div className="dropzone" id="dzArchitectMob" style={{ border: '2px dashed #d1d5db', padding: '24px', borderRadius: '8px', textAlign: 'center', position: 'relative', background: isUploadingArchitectMob ? '#f3f4f6' : 'transparent' }}>
-              <input type="file" id="fileArchitectMob" accept=".xlsx,.xls,.csv" onChange={handleArchitectMobUpload} disabled={isUploadingArchitectMob} style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', opacity: 0, cursor: 'pointer' }} />
-              <span className="dz-icon" style={{ fontSize: '32px', display: 'block', marginBottom: '8px' }}>📱</span>
-              <div className="dz-title" style={{ fontWeight: 500, fontSize: '14px' }}>
-                {isUploadingArchitectMob ? `Uploading to Database (${uploadProgress}%)` : 'Drop Architect Mobile Excel'}
-              </div>
-              <div className="dz-sub" style={{ fontSize: '11px', color: '#9ca3af' }}>.xlsx · .xls · .csv — Arct. ID · Mobile No*</div>
-            </div>
-            <div className="status" style={{ marginTop: '10px', display: 'flex', alignItems: 'center', gap: '6px' }}>
-              <div className="s-dot" style={{ width: '8px', height: '8px', borderRadius: '50%', background: architectMobFileLoaded ? '#10b981' : '#d1d5db' }}></div>
-              <span style={{ fontSize: '12px', color: '#4b5563' }}>
-                {architectMobFileLoaded ? 'Architect ID/mobile mapping synced' : 'Upload before processing claims to write matched mobile numbers'}
-              </span>
-            </div>
-          </div>
-        </div>
-
         {/* ZONE B: DMI Claim Sheet Ingestion */}
-        <div className="card" style={{ border: '1px solid #e5e7eb', borderRadius: '8px', padding: '16px', background: '#fff' }}>
-          <div className="card-hd" style={{ display: 'flex', gap: '10px', marginBottom: '12px' }}>
-            <div className="card-icon" style={{ fontSize: '20px' }}>📊</div>
+        <div className="card">
+          <div className="card-hd">
+            <div className="card-icon">📊</div>
             <div>
-              <div className="card-title" style={{ fontWeight: 600, fontSize: '14px' }}>Dataset 2 — DMI Claim Sheet</div>
-              <div className="card-sub" style={{ fontSize: '12px', color: '#6b7280' }}>Contains Lead ID · Approved Qty · Claim Status</div>
+              <div className="card-title" style={{ fontSize: '14px' }}>Dataset 2 — DMI Claim Sheet</div>
+              <div className="card-sub">Contains Lead ID · Approved Qty · Claim Status</div>
             </div>
           </div>
           <div className="card-body">
-            <div className="dropzone" id="dzDmi" style={{ border: '2px dashed #d1d5db', padding: '24px', borderRadius: '8px', textAlign: 'center', position: 'relative', background: isUploadingDmi ? '#f3f4f6' : 'transparent' }}>
-              <input 
-                type="file" 
-                id="fileDmiClaim" 
-                accept=".xlsx,.xls,.csv" 
+            <div className={`dropzone${isUploadingDmi ? ' uploading' : ''}`} id="dzDmi">
+              <input
+                type="file"
+                id="fileDmiClaim"
+                accept=".xlsx,.xls,.csv"
                 onChange={handleDmiClaimUpload}
                 disabled={isUploadingDmi}
-                style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', opacity: 0, cursor: 'pointer' }} 
               />
-              <span className="dz-icon" style={{ fontSize: '32px', display: 'block', marginBottom: '8px' }}>📊</span>
-              <div className="dz-title" style={{ fontWeight: 500, fontSize: '14px' }}>
-                {isUploadingDmi ? `Uploading to Database (${uploadProgress}%)` : 'Drop Influencer Claim Stage Detail Report'}
+              <span className="dz-icon">📊</span>
+              <div className="dz-title">
+                {isUploadingDmi ? `Uploading to Database… ${uploadProgress}%` : 'Drop Influencer Claim Stage Detail Report'}
               </div>
-              <div className="dz-sub" style={{ fontSize: '11px', color: '#9ca3af' }}>.xlsx · .xls · .csv — Lead ID · Approved Qty · Status</div>
+              <div className="dz-sub">.xlsx · .xls · .csv — Lead ID · Approved Qty · Status</div>
+              {isUploadingDmi && (
+                <div className="pbar-wrap" style={{ marginTop: '10px' }}>
+                  <div className="pbar" style={{ width: `${uploadProgress}%` }}></div>
+                </div>
+              )}
             </div>
-            
-            <div className="status" id="statusDmi" style={{ marginTop: '10px', display: 'flex', alignItems: 'center', gap: '6px' }}>
-              <div className="s-dot" style={{ width: '8px', height: '8px', borderRadius: '50%', background: dmiFileLoaded ? '#10b981' : '#d1d5db' }}></div>
-              <span id="statusDmiTxt" style={{ fontSize: '12px', color: '#4b5563' }}>
+
+            <div className={`status ${dmiFileLoaded ? 'ok' : ''}`} id="statusDmi">
+              <div className="s-dot"></div>
+              <span id="statusDmiTxt">
                 {dmiFileLoaded ? 'New active DMI Claim records operational' : 'Using database records unless new files are provided'}
               </span>
             </div>
@@ -1124,137 +1239,306 @@ const runClaimProcessor = async () => {
 
       </div>
 
+      {/* ZONE C & D: Architect Mobile Mapping + DGO Info — both optional, only
+          refreshed ~2x/month, so they stay as small collapsed controls instead
+          of full-size drop zones. */}
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '14px', marginBottom: '20px', alignItems: 'flex-start' }}>
+
+        <div>
+          {!showArchitectMobPanel ? (
+            <button
+              type="button"
+              className="btn btn-out btn-sm"
+              onClick={() => setShowArchitectMobPanel(true)}
+            >
+              <span>📱</span>
+              <span>Update Architect Mobile Mapping</span>
+              <span className="badge b-dim">Optional · ~2×/month</span>
+              {architectMobFileLoaded && <span className="s-dot" style={{ background: 'var(--green)' }}></span>}
+            </button>
+          ) : (
+            <div className="card" style={{ maxWidth: '420px' }}>
+              <div className="card-hd">
+                <div className="card-icon">📱</div>
+                <div style={{ flex: 1 }}>
+                  <div className="card-title" style={{ fontSize: '13px' }}>Architect Mobile Numbers</div>
+                  <div className="card-sub">Optional — matches `Arct. ID` to Lead Master, needed only ~2×/month</div>
+                </div>
+                <button
+                  type="button"
+                  className="modal-x"
+                  onClick={() => setShowArchitectMobPanel(false)}
+                  title="Collapse"
+                >
+                  ✕
+                </button>
+              </div>
+              <div className="card-body">
+                <div className={`dropzone compact${isUploadingArchitectMob ? ' uploading' : ''}`} id="dzArchitectMob">
+                  <input
+                    type="file"
+                    id="fileArchitectMob"
+                    accept=".xlsx,.xls,.csv"
+                    onChange={handleArchitectMobUpload}
+                    disabled={isUploadingArchitectMob}
+                  />
+                  <span className="dz-icon">📱</span>
+                  <div className="dz-title">
+                    {isUploadingArchitectMob ? `Uploading… ${uploadProgress}%` : 'Drop Architect Mobile Excel'}
+                  </div>
+                  <div className="dz-sub">.xlsx · .xls · .csv — Arct. ID · Mobile No*</div>
+                  {isUploadingArchitectMob && (
+                    <div className="pbar-wrap" style={{ marginTop: '8px' }}>
+                      <div className="pbar" style={{ width: `${uploadProgress}%` }}></div>
+                    </div>
+                  )}
+                </div>
+                <div className={`status ${architectMobFileLoaded ? 'ok' : ''}`}>
+                  <div className="s-dot"></div>
+                  <span>
+                    {architectMobFileLoaded ? 'Architect ID/mobile mapping synced' : 'Upload before processing claims to write matched mobile numbers'}
+                  </span>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div>
+          {!showDgoInfoPanel ? (
+            <button
+              type="button"
+              className="btn btn-out btn-sm"
+              onClick={() => setShowDgoInfoPanel(true)}
+            >
+              <span>🪪</span>
+              <span>Update DGO Info (Lead Created By Mobile)</span>
+              <span className="badge b-dim">Optional · ~2×/month</span>
+              {dgoInfoFileLoaded && <span className="s-dot" style={{ background: 'var(--green)' }}></span>}
+            </button>
+          ) : (
+            <div className="card" style={{ maxWidth: '420px' }}>
+              <div className="card-hd">
+                <div className="card-icon">🪪</div>
+                <div style={{ flex: 1 }}>
+                  <div className="card-title" style={{ fontSize: '13px' }}>DGO Info</div>
+                  <div className="card-sub">Optional — matches Login ID to `Lead Created By`, needed only ~2×/month</div>
+                </div>
+                <button
+                  type="button"
+                  className="modal-x"
+                  onClick={() => setShowDgoInfoPanel(false)}
+                  title="Collapse"
+                >
+                  ✕
+                </button>
+              </div>
+              <div className="card-body">
+                <div className={`dropzone compact${isUploadingDgoInfo ? ' uploading' : ''}`} id="dzDgoInfo">
+                  <input
+                    type="file"
+                    id="fileDgoInfo"
+                    accept=".xlsx,.xls,.csv"
+                    onChange={handleDgoInfoUpload}
+                    disabled={isUploadingDgoInfo}
+                  />
+                  <span className="dz-icon">🪪</span>
+                  <div className="dz-title">
+                    {isUploadingDgoInfo ? `Uploading… ${uploadProgress}%` : 'Drop DGO Info Excel'}
+                  </div>
+                  <div className="dz-sub">.xlsx · .xls · .csv — Login ID · Mobile No · Designation</div>
+                  {isUploadingDgoInfo && (
+                    <div className="pbar-wrap" style={{ marginTop: '8px' }}>
+                      <div className="pbar" style={{ width: `${uploadProgress}%` }}></div>
+                    </div>
+                  )}
+                </div>
+                <div className={`status ${dgoInfoFileLoaded ? 'ok' : ''}`}>
+                  <div className="s-dot"></div>
+                  <span>
+                    {dgoInfoFileLoaded ? 'DGO Info login/mobile mapping synced' : 'Upload to write mobile numbers for lead-creating staff into the ledger'}
+                  </span>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+
+      </div>
+
       {/* PROCESSING ANALYTICS METRICS OUTPUT DISPLAY */}
       {showResults && (
         <div id="claimResultSection" style={{ marginTop: '24px' }}>
-          
-         
+
+          {/* KPI Summary Row */}
+          <div className="kpi-row kpi-5">
+            <div className="kpi">
+              <div className="kpi-lbl">Matched &amp; Approved</div>
+              <div className="kpi-val">{metrics.matchedApproved.toLocaleString('en-IN')}</div>
+              <div className="kpi-note">of {metrics.dmiRows.toLocaleString('en-IN')} claim rows</div>
+            </div>
+            <div className="kpi">
+              <div className="kpi-lbl">Total Sheets Volume</div>
+              <div className="kpi-val">{metrics.totalQty.toLocaleString('en-IN')}</div>
+              <div className="kpi-note">eligible sheets</div>
+            </div>
+            <div className="kpi">
+              <div className="kpi-lbl">Total Payout</div>
+              <div className="kpi-val">₹{metrics.totalPayout.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</div>
+              <div className="kpi-note">computed settlement</div>
+            </div>
+            <div className="kpi">
+              <div className="kpi-lbl">Architects Covered</div>
+              <div className="kpi-val">{metrics.architectsCount.toLocaleString('en-IN')}</div>
+              <div className="kpi-note">unique beneficiaries</div>
+            </div>
+            <div className="kpi">
+              <div className="kpi-lbl">Flags &amp; Issues</div>
+              <div className="kpi-val" style={{ color: metrics.flagsCount > 0 ? 'var(--red)' : 'var(--white)' }}>{metrics.flagsCount.toLocaleString('en-IN')}</div>
+              <div className="kpi-note">{metrics.zeroRateCount} zero-rate items</div>
+            </div>
+          </div>
 
           {/* Tab View Interfaces */}
-          <div className="card" style={{ border: '1px solid #e5e7eb', borderRadius: '8px', background: '#fff', overflow: 'hidden' }}>
-            <div className="card-hd" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '16px', borderBottom: '1px solid #e5e7eb', flexWrap: 'wrap', gap: '12px' }}>
+          <div className="card">
+            <div className="card-hd" style={{ justifyContent: 'space-between' }}>
               <div style={{ flex: 1 }}>
-                <div className="card-title" style={{ fontWeight: 600, fontSize: '15px' }}>Claim Processing Computation Output</div>
+                <div className="card-title" style={{ fontSize: '15px' }}>Claim Processing Computation Output</div>
+                <div className="card-sub">Review each computed dimension below, then push confirmed settlements to the ledger.</div>
               </div>
-              <div>
-                <button 
-                  className="btn btn-gold" 
-                  onClick={pushClaimsToLedger} 
-                  disabled={isPushingLedger || payoutCalcData.length === 0}
-                  style={{ background: '#d97706', color: '#fff', border: 'none', padding: '8px 16px', borderRadius: '6px', fontWeight: 500, cursor: 'pointer' }}
-                >
-                  {isPushingLedger ? '⏳ Posting to Ledger...' : '⬆ Push Payout Matrix to Ledger'}
-                </button>
-              </div>
-            </div>
-            
-            {/* Sub Nav Tab Strip */}
-            <div className="tabbar" style={{ display: 'flex', background: '#f9fafb', borderBottom: '1px solid #e5e7eb' }}>
-              <button className={`tabbtn ${activeTab === 'claim-output' ? 'active' : ''}`} style={{ padding: '12px 16px', border: 'none', background: activeTab === 'claim-output' ? '#fff' : 'transparent', borderBottom: activeTab === 'claim-output' ? '2px solid #2563eb' : 'none', cursor: 'pointer', fontWeight: 500, fontSize: '13px' }} onClick={() => setActiveTab('claim-output')}>Claim Output</button>
-              <button className={`tabbtn ${activeTab === 'claim-arch' ? 'active' : ''}`} style={{ padding: '12px 16px', border: 'none', background: activeTab === 'claim-arch' ? '#fff' : 'transparent', borderBottom: activeTab === 'claim-arch' ? '2px solid #2563eb' : 'none', cursor: 'pointer', fontWeight: 500, fontSize: '13px' }} onClick={() => setActiveTab('claim-arch')}>By Architect</button>
-              <button className={`tabbtn ${activeTab === 'claim-payout' ? 'active' : ''}`} style={{ padding: '12px 16px', border: 'none', background: activeTab === 'claim-payout' ? '#fff' : 'transparent', borderBottom: activeTab === 'claim-payout' ? '2px solid #2563eb' : 'none', cursor: 'pointer', fontWeight: 500, fontSize: '13px' }} onClick={() => setActiveTab('claim-payout')}>💰 Payout Calculation</button>
-              <button className={`tabbtn ${activeTab === 'claim-flags' ? 'active' : ''}`} style={{ padding: '12px 16px', border: 'none', background: activeTab === 'claim-flags' ? '#fff' : 'transparent', borderBottom: activeTab === 'claim-flags' ? '2px solid #2563eb' : 'none', cursor: 'pointer', fontWeight: 500, fontSize: '13px' }} onClick={() => setActiveTab('claim-flags')}>
-                Flags &amp; Issues <span className="badge b-red" style={{ background: '#ef4444', color: '#fff', fontSize: '10px', padding: '2px 6px', borderRadius: '10px', marginLeft: '4px' }}>{metrics.flagsCount}</span>
+              <button
+                className="btn btn-gold"
+                onClick={pushClaimsToLedger}
+                disabled={isPushingLedger || payoutCalcData.length === 0}
+              >
+                {isPushingLedger ? '⏳ Posting to Ledger...' : '⬆ Push Payout Matrix to Ledger'}
               </button>
             </div>
-            
+
+            {/* Sub Nav Tab Strip */}
+            <div className="tabbar">
+              <button className={`tabbtn ${activeTab === 'claim-output' ? 'active' : ''}`} onClick={() => setActiveTab('claim-output')}>Claim Output</button>
+              <button className={`tabbtn ${activeTab === 'claim-arch' ? 'active' : ''}`} onClick={() => setActiveTab('claim-arch')}>By Architect</button>
+              <button className={`tabbtn ${activeTab === 'claim-payout' ? 'active' : ''}`} onClick={() => setActiveTab('claim-payout')}>💰 Payout Calculation</button>
+              <button className={`tabbtn ${activeTab === 'claim-flags' ? 'active' : ''}`} onClick={() => setActiveTab('claim-flags')}>
+                Flags &amp; Issues <span className="badge b-red" style={{ marginLeft: '4px' }}>{metrics.flagsCount}</span>
+              </button>
+            </div>
+
             {/* Tab Pane Output Data Renderers */}
-            <div style={{ padding: '16px', maxHeight: '400px', overflowY: 'auto' }}>
+            <div className="card-body">
               {activeTab === 'claim-output' && (
-                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
-                  <thead>
-                    <tr style={{ background: '#f3f4f6', textAlign: 'left' }}>
-                      <th style={{ padding: '8px' }}>Claim No</th>
-                      <th style={{ padding: '8px' }}>Lead ID</th>
-                      <th style={{ padding: '8px' }}>Linked Architect</th>
-                      <th style={{ padding: '8px' }}>Product SKU</th>
-                      <th style={{ padding: '8px' }}>Approved Qty</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {claimOutputData.map((row, i) => (
-                      <tr key={i} style={{ borderBottom: '1px solid #e5e7eb' }}>
-                        <td style={{ padding: '8px' }}>{row.claim_no}</td>
-                        <td style={{ padding: '8px' }}>{row.lead_id}</td>
-                        <td style={{ padding: '8px' }}>{row.architect}</td>
-                        <td style={{ padding: '8px' }}>{row.product}</td>
-                        <td style={{ padding: '8px' }}>{row.qty}</td>
+                <div className="tbl-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Claim No</th>
+                        <th>Lead ID</th>
+                        <th>Linked Architect</th>
+                        <th>Product SKU</th>
+                        <th className="td-c">Approved Qty</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
+                    </thead>
+                    <tbody>
+                      {claimOutputData.map((row, i) => (
+                        <tr key={i}>
+                          <td className="td-n">{row.claim_no}</td>
+                          <td>{row.lead_id}</td>
+                          <td>{row.architect}</td>
+                          <td>{row.product}</td>
+                          <td className="td-c">{row.qty}</td>
+                        </tr>
+                      ))}
+                      {claimOutputData.length === 0 && (
+                        <tr><td colSpan="5" className="td-s" style={{ textAlign: 'center', padding: '24px' }}>No settlements computed yet.</td></tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
               )}
 
               {activeTab === 'claim-arch' && (
-                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
-                  <thead>
-                    <tr style={{ background: '#f3f4f6', textAlign: 'left' }}>
-                      <th style={{ padding: '8px' }}>Architect Title Entity</th>
-                      <th style={{ padding: '8px' }}>Unique Leads Covered</th>
-                      <th style={{ padding: '8px' }}>Total Volume Sheets</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {architectSummary.map((row, i) => (
-                      <tr key={i} style={{ borderBottom: '1px solid #e5e7eb' }}>
-                        <td style={{ padding: '8px', fontWeight: 500 }}>{row.name}</td>
-                        <td style={{ padding: '8px' }}>{row.leadsCalculated}</td>
-                        <td style={{ padding: '8px' }}>{row.totalSheetsVolume.toFixed(2)}</td>
+                <div className="tbl-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Architect</th>
+                        <th className="td-c">Unique Leads Covered</th>
+                        <th className="td-c">Total Volume (Sheets)</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
+                    </thead>
+                    <tbody>
+                      {architectSummary.map((row, i) => (
+                        <tr key={i}>
+                          <td className="td-n">{row.name}</td>
+                          <td className="td-c">{row.leadsCalculated}</td>
+                          <td className="td-c td-amt">{row.totalSheetsVolume.toFixed(2)}</td>
+                        </tr>
+                      ))}
+                      {architectSummary.length === 0 && (
+                        <tr><td colSpan="3" className="td-s" style={{ textAlign: 'center', padding: '24px' }}>No architect settlements computed yet.</td></tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
               )}
 
               {activeTab === 'claim-payout' && (
-                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
-                  <thead>
-                    <tr style={{ background: '#f3f4f6', textAlign: 'left' }}>
-                      <th style={{ padding: '8px' }}>Beneficiary Name</th>
-                      <th style={{ padding: '8px' }}>SKU Token Reference</th>
-                      <th style={{ padding: '8px' }}>Eligible Volume</th>
-                      <th style={{ padding: '8px' }}>Matrix Rate</th>
-                      <th style={{ padding: '8px' }}>Computed Payout</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {payoutCalcData.map((row, i) => (
-                      <tr key={i} style={{ borderBottom: '1px solid #e5e7eb' }}>
-                        <td style={{ padding: '8px' }}>{row.architect}</td>
-                        <td style={{ padding: '8px' }}>{row.product}</td>
-                        <td style={{ padding: '8px' }}>{row.qty}</td>
-                        <td style={{ padding: '8px' }}>{row.rate > 0 ? `₹${row.rate}` : <span style={{ color: '#dc2626' }}>₹0 (No Rule)</span>}</td>
-                        <td style={{ padding: '8px', fontWeight: 600, color: '#059669' }}>₹{row.payout.toFixed(2)}</td>
+                <div className="tbl-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Beneficiary Name</th>
+                        <th>SKU Token Reference</th>
+                        <th className="td-c">Eligible Volume</th>
+                        <th className="td-c">Matrix Rate</th>
+                        <th className="td-c">Computed Payout</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
+                    </thead>
+                    <tbody>
+                      {payoutCalcData.map((row, i) => (
+                        <tr key={i}>
+                          <td className="td-n">{row.architect}</td>
+                          <td>{row.product}</td>
+                          <td className="td-c">{row.qty}</td>
+                          <td className="td-c">{row.rate > 0 ? `₹${row.rate}` : <span className="td-r">₹0 (No Rule)</span>}</td>
+                          <td className="td-c td-amt td-g">₹{row.payout.toFixed(2)}</td>
+                        </tr>
+                      ))}
+                      {payoutCalcData.length === 0 && (
+                        <tr><td colSpan="5" className="td-s" style={{ textAlign: 'center', padding: '24px' }}>No payout rows computed yet.</td></tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
               )}
 
               {activeTab === 'claim-flags' && (
-                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
-                  <thead>
-                    <tr style={{ background: '#f3f4f6', textAlign: 'left' }}>
-                      <th style={{ padding: '8px' }}>Reference Key ID</th>
-                      <th style={{ padding: '8px' }}>Anomalous Classification</th>
-                      <th style={{ padding: '8px' }}>Log Descriptions</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {flagsData.map((row, i) => (
-                      <tr key={i} style={{ borderBottom: '1px solid #e5e7eb', background: '#fff5f5' }}>
-                        <td style={{ padding: '8px', color: '#b91c1c' }}>{row.id}</td>
-                        <td style={{ padding: '8px', fontWeight: 500, color: '#991b1b' }}>{row.type}</td>
-                        <td style={{ padding: '8px', color: '#dc2626' }}>{row.description}</td>
-                      </tr>
-                    ))}
-                    {flagsData.length === 0 && (
+                <div className="tbl-wrap">
+                  <table>
+                    <thead>
                       <tr>
-                        <td colSpan="3" style={{ padding: '16px', textAlign: 'center', color: '#9ca3af' }}>No compliance or parsing flags identified.</td>
+                        <th>Reference Key ID</th>
+                        <th>Classification</th>
+                        <th>Details</th>
                       </tr>
-                    )}
-                  </tbody>
-                </table>
+                    </thead>
+                    <tbody>
+                      {flagsData.map((row, i) => (
+                        <tr key={i}>
+                          <td className="td-r">{row.id}</td>
+                          <td><span className="badge b-red">{row.type}</span></td>
+                          <td className="td-s">{row.description}</td>
+                        </tr>
+                      ))}
+                      {flagsData.length === 0 && (
+                        <tr>
+                          <td colSpan="3" className="td-s" style={{ padding: '24px', textAlign: 'center' }}>✅ No compliance or parsing flags identified.</td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
               )}
             </div>
           </div>
