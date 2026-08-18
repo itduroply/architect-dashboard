@@ -521,7 +521,7 @@ const runClaimProcessor = async () => {
     };
 
     // 2. Fetch dataset tables
-    const dbLeads = await fetchAllRecordsOptimized('leads_master', 'lead_id, linked_architect,state,lead_status', 'lead_id');
+    const dbLeads = await fetchAllRecordsOptimized('leads_master', 'lead_id, linked_architect,state,lead_status,lead_created_by', 'lead_id');
     const dbClaims = await fetchAllRecordsOptimized('dmi_claims', 'claim_no, lead_id, status, product_code, approved_qty,claim_date', 'claim_no');
     const dbArchitectMob = await fetchAllRecordsOptimized('architect_mob', 'arch_id, mobile_no', 'arch_id');
     // The ledger is transactional. Once a claim has been settled (or its Nature's
@@ -760,6 +760,7 @@ const runClaimProcessor = async () => {
       calculatedOutputs.push({
         claim_no: claim.claim_no,
         lead_id: claimLeadId,
+        lead_created_by: matchingLead?.lead_created_by || null,
         architect: architectName,
         architectId,
         architectMobile,
@@ -800,6 +801,7 @@ const runClaimProcessor = async () => {
           architect_mobile: row.architectMobile,
           claim_no: row.claim_no,
           lead_id: row.lead_id,
+          lead_created_by: row.lead_created_by,
           state: row.state,
           lead_status: row.lead_status,
           claim_date: row.claim_date,
@@ -860,6 +862,7 @@ const runClaimProcessor = async () => {
         architect_mobile: row.architectMobile,
         claim_no: row.claim_no,                       // Line-item claim constraint tracking
         lead_id: row.lead_id,
+        lead_created_by: row.lead_created_by,
         product_sku: row.product,
         total_eligible_sheets: row.qty,               // Base volume item metric
         matrix_rate: row.rate,
