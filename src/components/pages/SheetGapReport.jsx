@@ -285,6 +285,12 @@ export default function SheetGapReport() {
   const [error, setError] = useState('');
   const [lastUpdated, setLastUpdated] = useState(null);
   const [lostLeadSheets, setLostLeadSheets] = useState(0);
+  const [reconciliation, setReconciliation] = useState({
+    approvedSheets: 0,
+    ledgerSheets: 0,
+    uncountedSheets: 0,
+    remainingSheets: 0,
+  });
 
   const loadReport = useCallback(async () => {
     setLoading(true);
@@ -427,11 +433,21 @@ export default function SheetGapReport() {
         const gapSheets =
           missingSheets > 0 ? missingSheets : approvedSheets;
 
-        // A Lost lead is dropped by the claim processor by design, so its sheets
-        // are reported separately instead of in the architect-wise total.
+        // A Lost lead is dropped by the claim processor by design. Keep it in
+        // this diagnostic report, however, so the full gap can be traced back
+        // to the exact claim instead of silently disappearing from the screen.
         if (isLostLead(lead)) {
           lostLeadGapSheets += gapSheets;
-          return [];
+          return [{
+            claimNo: claim.claim_no || '—',
+            leadId: claim.lead_id || '—',
+            claimDate: formatClaimDate(claim.claim_date),
+            architect: lead.linked_architect,
+            state: lead.state || 'Unknown',
+            productSku: productSku || 'Blank product code',
+            sheets: gapSheets,
+            lostLeadExclusion: true,
+          }];
         }
 
         return [
@@ -457,8 +473,64 @@ export default function SheetGapReport() {
           String(first.claimNo).localeCompare(String(second.claimNo))
       );
 
-      setRows(candidateRows);
+      // Reconcile claim-by-claim instead of comparing Architect Accounts with
+      // the Ledger total directly. Architect Accounts is itself built from the
+      // Ledger, so that comparison would count the same sheets twice.
+      const countableCandidateRows = candidateRows.filter(
+        (row) => !row.lostLeadExclusion
+      );
+      const uncountedSheetsByClaim = new Map(
+        countableCandidateRows.map((row) => [String(row.claimNo || '').trim(), Number(row.sheets || 0)])
+      );
+      let approvedSheetsTotal = 0;
+      let ledgerSheetsTotal = 0;
+      let remainingSheetsTotal = 0;
+
+      const reconciliationRows = claims.flatMap((claim) => {
+        if (!isApproved(claim.status)) return [];
+
+        const lead = leadsById.get(String(claim.lead_id || '').trim());
+        const productSku = String(claim.product_code || '').trim();
+        if (!lead?.linked_architect || isLostLead(lead) || /SIGNATURE|NATURE/i.test(productSku)) return [];
+
+        const claimNo = String(claim.claim_no || '').trim();
+        const approvedSheets = Number(claim.approved_qty || 0);
+        const ledgerSheets = ledgerSheetsByClaim.get(claimNo) || 0;
+        const uncountedSheets = uncountedSheetsByClaim.get(claimNo) || 0;
+        const remainingSheets = Math.max(0, approvedSheets - ledgerSheets - uncountedSheets);
+
+        approvedSheetsTotal += approvedSheets;
+        ledgerSheetsTotal += Math.min(ledgerSheets, approvedSheets);
+        remainingSheetsTotal += remainingSheets;
+
+        if (remainingSheets <= 0) return [];
+
+        return [{
+          claimNo: claim.claim_no || '—',
+          leadId: claim.lead_id || '—',
+          claimDate: formatClaimDate(claim.claim_date),
+          architect: lead.linked_architect,
+          state: lead.state || 'Unknown',
+          productSku: productSku || 'Blank product code',
+          sheets: remainingSheets,
+          reconciliationGap: true,
+        }];
+      });
+
+      const reportRows = [...candidateRows, ...reconciliationRows].sort(
+        (first, second) =>
+          String(first.architect).localeCompare(String(second.architect)) ||
+          String(first.claimNo).localeCompare(String(second.claimNo))
+      );
+
+      setRows(reportRows);
       setLostLeadSheets(lostLeadGapSheets);
+      setReconciliation({
+        approvedSheets: approvedSheetsTotal,
+        ledgerSheets: ledgerSheetsTotal,
+        uncountedSheets: countableCandidateRows.reduce((sum, row) => sum + Number(row.sheets || 0), 0),
+        remainingSheets: remainingSheetsTotal,
+      });
       setLastUpdated(new Date());
     } catch (err) {
       console.error(
@@ -470,6 +542,7 @@ export default function SheetGapReport() {
       // screen next to the error, which reads as up-to-date data.
       setRows([]);
       setLostLeadSheets(0);
+      setReconciliation({ approvedSheets: 0, ledgerSheets: 0, uncountedSheets: 0, remainingSheets: 0 });
       setLastUpdated(null);
       setError(err.message);
     } finally {
@@ -675,6 +748,11 @@ export default function SheetGapReport() {
               >
                 {totals.sheets.toLocaleString('en-IN')}
               </strong>
+              {lostLeadSheets > 0 && (
+                <span style={{ color: '#b45309', fontSize: 11, fontWeight: 700 }}>
+                  Includes {lostLeadSheets.toLocaleString('en-IN')} lost-lead sheets
+                </span>
+              )}
             </div>
           </div>
 
@@ -788,6 +866,30 @@ export default function SheetGapReport() {
 
             </div>
           </div>
+
+          {/* Reconciliation remainder */}
+          {/* <div
+            style={{
+              background: '#fff',
+              border: '1px solid #e5eaf2',
+              borderRadius: 14,
+              padding: 20,
+              boxShadow: '0 3px 12px rgba(15,23,42,0.04)',
+              position: 'relative',
+              overflow: 'hidden',
+            }}
+          >
+            <div style={{ position: 'absolute', left: 0, top: 0, width: 4, height: '100%', background: reconciliation.remainingSheets > 0 ? '#dc2626' : '#10b981' }} />
+            <div style={{ color: '#64748b', fontSize: 11, fontWeight: 800, letterSpacing: '0.7px' }}>
+              RECONCILIATION GAP
+            </div>
+            <strong style={{ display: 'block', marginTop: 10, fontSize: 28, color: reconciliation.remainingSheets > 0 ? '#dc2626' : '#059669' }}>
+              {reconciliation.remainingSheets.toLocaleString('en-IN')}
+            </strong>
+            <div style={{ marginTop: 5, color: '#94a3b8', fontSize: 11, lineHeight: 1.45 }}>
+              Approved {reconciliation.approvedSheets.toLocaleString('en-IN')} − Ledger {reconciliation.ledgerSheets.toLocaleString('en-IN')} − Uncounted {reconciliation.uncountedSheets.toLocaleString('en-IN')}
+            </div>
+          </div> */}
         </div>
 
         {/* ================= SEARCH ================= */}
@@ -969,7 +1071,7 @@ export default function SheetGapReport() {
                   {[
                     'Architect',
                     'State',
-                    'Product Not Counted',
+                    'Product / Reconciliation Gap',
                     'Total Sheets',
                     'Lead ID',
                     'Claim No.',
@@ -1152,6 +1254,16 @@ export default function SheetGapReport() {
                           }}
                         >
                           {row.productSku}
+                          {row.lostLeadExclusion && (
+                            <span style={{ display: 'block', marginTop: 5, color: '#b45309', fontFamily: 'inherit', fontSize: 10, fontWeight: 800 }}>
+                              LOST LEAD — EXCLUDED FROM CURRENT COUNT
+                            </span>
+                          )}
+                          {row.reconciliationGap && (
+                            <span style={{ display: 'block', marginTop: 5, color: '#dc2626', fontFamily: 'inherit', fontSize: 10, fontWeight: 800 }}>
+                              NOT IN LEDGER OR UNCOUNTED TOTAL
+                            </span>
+                          )}
                         </span>
                       </td>
 

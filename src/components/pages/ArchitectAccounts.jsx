@@ -1555,7 +1555,7 @@ const ArchitectAccounts = () => {
                   <th style={{ padding: '10px 12px', width: '19%' }}>Architect Name</th>
                   <th style={{ padding: '10px 12px', width: '11%' }}>Account Number</th>
                   <th style={{ padding: '10px 12px', width: '11%' }}>Mobile Number</th>
-                  <th style={{ padding: '10px 12px', width: '13%' }}>Lead ID</th>
+                  {/* <th style={{ padding: '10px 12px', width: '13%' }}>Lead ID</th> */}
                   <th style={{ padding: '10px 12px', width: '7%', textAlign: 'right' }}>Sheets</th>
                   <th style={{ padding: '10px 12px', width: '10%', textAlign: 'right' }}>Pool Payout</th>
                   <th style={{ padding: '10px 12px', width: '9%', textAlign: 'right' }}>Paid</th>
@@ -1620,9 +1620,9 @@ const ArchitectAccounts = () => {
                     <td style={{ padding: '10px 12px', color: '#4b5563', fontSize: '12px', overflowWrap: 'anywhere' }} title={row.architectMobiles.join(', ')}>
                       {row.architectMobiles.join(', ') || '—'}
                     </td>
-                    <td style={{ padding: '10px 12px', color: '#4b5563', fontSize: '12px', overflowWrap: 'anywhere' }} title={row.leadIds.join(', ')}>
+                    {/* <td style={{ padding: '10px 12px', color: '#4b5563', fontSize: '12px', overflowWrap: 'anywhere' }} title={row.leadIds.join(', ')}>
                       {row.leadIds.join(', ') || '—'}
-                    </td>
+                    </td> */}
                     <td style={{ padding: '10px 12px', textAlign: 'right', color: '#374151' }}>{row.total_sheets.toFixed(1)}</td>
                     <td style={{ padding: '10px 12px', textAlign: 'right', fontWeight: 600, color: row.isEligible ? '#059669' : '#6b7280', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                       ₹{row.actualPayoutAllowed.toLocaleString('en-IN', { maximumFractionDigits: 0 })}
