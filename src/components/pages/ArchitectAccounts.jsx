@@ -210,6 +210,13 @@ const ArchitectAccounts = () => {
     }
   };
 
+  // leads_master.lead_created_by is stored as "LOGINID | Name" — the DGO's
+  // human name is the part after the pipe.
+  const getDgoNameFromLeadCreatedBy = (value) => {
+    const parts = String(value ?? '').split('|');
+    return (parts[1] || parts[0] || '').trim();
+  };
+
   // Architect Detail Summary Fetch & Grouping
   const fetchArchitectSummary = async (architectName) => {
     setDetailsModal({ show: true, loading: true, architectName, summaryData: {} });
@@ -217,19 +224,19 @@ const ArchitectAccounts = () => {
     try {
       const { data, error } = await supabase
         .from('commission_ledger')
-        .select('product_sku, total_eligible_sheets, payout_status')
+        .select('product_sku, total_eligible_sheets, payout_status, lead_id, lead_created_by, lead_created_by_mobile')
         .eq('architect_name', architectName);
       if (error) throw error;
 
       const grouped = data.reduce((acc, row) => {
         const sku = row.product_sku || 'UNKNOWN';
-        const sheetsCount = parseFloat(row.total_eligible_sheets || 0); 
-        
+        const sheetsCount = parseFloat(row.total_eligible_sheets || 0);
+
         if (sheetsCount === 0) return acc;
 
         let category = 'Other';
         const upperSku = sku.toUpperCase();
-        
+
         if (upperSku.startsWith('PW')) category = 'Plywood (PW)';
         else if (upperSku.startsWith('BB')) category = 'Blockboard (BB)';
         else if (upperSku.startsWith('FD')) category = 'Flush Door (FD)';
@@ -242,12 +249,27 @@ const ArchitectAccounts = () => {
         acc[category].categoryTotal += sheetsCount;
 
         if (!acc[category].skus[sku]) {
-          acc[category].skus[sku] = { total: 0, isConverted: false };
+          acc[category].skus[sku] = { total: 0, isConverted: false, leads: {} };
         }
-        acc[category].skus[sku].total += sheetsCount;
-        acc[category].skus[sku].isConverted = acc[category].skus[sku].isConverted ||
-          row.payout_status === 'Converted Nature Signature Target' ||
+        const skuBucket = acc[category].skus[sku];
+        skuBucket.total += sheetsCount;
+        const rowIsConverted = row.payout_status === 'Converted Nature Signature Target' ||
           (/NATURESIGNATURE/i.test(sku) && !/NATURES[\s_]+SIGNATURE/i.test(sku));
+        skuBucket.isConverted = skuBucket.isConverted || rowIsConverted;
+
+        // Per-lead breakdown, used to show one row per Lead ID (with its DGO
+        // name/mobile) for Nature's Signature SKUs in the summary modal.
+        const leadId = row.lead_id || 'UNKNOWN';
+        if (!skuBucket.leads[leadId]) {
+          skuBucket.leads[leadId] = {
+            total: 0,
+            isConverted: false,
+            dgoName: getDgoNameFromLeadCreatedBy(row.lead_created_by),
+            dgoMobile: row.lead_created_by_mobile || '',
+          };
+        }
+        skuBucket.leads[leadId].total += sheetsCount;
+        skuBucket.leads[leadId].isConverted = skuBucket.leads[leadId].isConverted || rowIsConverted;
 
         return acc;
       }, {});
@@ -991,61 +1013,106 @@ const ArchitectAccounts = () => {
                         {Object.entries(data.skus).map(([sku, skuData], idx) => {
                           const total = skuData.total;
                           const isNaturesSignature = /NATURE'?S?[\s_]*SIGNATURE/i.test(sku || '');
-                          const isAlreadyConverted = skuData.isConverted;
+                          const leadEntries = Object.entries(skuData.leads || {});
                           return (
                             <tr key={sku} style={{ borderBottom: idx === Object.keys(data.skus).length - 1 ? 'none' : '1px solid #f1f5f9' }}>
                               <td colSpan={2} style={{ padding: '12px 18px' }}>
-                                <div style={{
-                                  display: 'flex',
-                                  justify: 'space-between',
-                                  alignItems: 'center',
-                                  flexWrap: 'wrap',
-                                  gap: '12px'
-                                }}>
-                                  
-                                  {/* Product SKU Name */}
-                                  <div 
-                                    title={sku}
-                                    style={{ 
-                                      flex: '1 1 260px', 
-                                      color: '#0f172a', 
-                                      fontWeight: 500,
-                                      lineHeight: '1.4',
-                                      wordBreak: 'break-word',
-                                      overflowWrap: 'anywhere'
-                                    }}
-                                  >
-                                    {sku}
-                                  </div>
+                                {isNaturesSignature ? (
+                                  <div>
+                                    {/* SKU header: name + lead/sheet roll-up */}
+                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px', marginBottom: '10px' }}>
+                                      <div title={sku} style={{ color: '#0f172a', fontWeight: 600, fontSize: '13.5px', wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
+                                        {sku}
+                                      </div>
+                                      <span style={{ fontSize: '11.5px', fontWeight: 600, color: '#64748b', whiteSpace: 'nowrap' }}>
+                                        {leadEntries.length} Lead{leadEntries.length !== 1 ? 's' : ''} · {total.toFixed(1)} Sheets Total
+                                      </span>
+                                    </div>
 
-                                  {/* Sheet Count & Convert Button Container */}
-                                  <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexShrink: 0, marginLeft: 'auto' }}>
-                                    <span style={{ fontWeight: 600, color: '#0f172a', whiteSpace: 'nowrap' }}>
-                                      {total.toFixed(1)} Sheets
-                                    </span>
-                                    
-                                    {isNaturesSignature && (
-                                      <button 
-                                        onClick={() => {
-                                          if (isAlreadyConverted) {
-                                            setReconversionModal({ show: true, sourceSku: sku, maxQty: total, reason: '' });
-                                            return;
-                                          }
-                                          openTransferModal(sku, total);
-                                        }}
-                                        style={{
-                                          background: isAlreadyConverted ? '#d97706' : '#0284c7', color: '#ffffff', border: 'none',
-                                          borderRadius: '6px', padding: '6px 12px', fontSize: '12px', cursor: 'pointer',
-                                          fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: '5px',
-                                          boxShadow: isAlreadyConverted ? '0 2px 4px rgba(217, 119, 6, 0.2)' : '0 2px 4px rgba(2, 132, 199, 0.2)', flexShrink: 0
-                                        }}
-                                      >
-                                        {isAlreadyConverted ? '↻ Reconvert' : '✏️ Convert Product'}
-                                      </button>
-                                    )}
-                                  </div>
+                                    {/* One row per Lead ID: who created it (DGO) + how many sheets + convert action */}
+                                    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                                      {leadEntries.map(([leadId, leadData]) => (
+                                        <div
+                                          key={leadId}
+                                          style={{
+                                            display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '14px', flexWrap: 'wrap',
+                                            background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: '9px', padding: '10px 14px'
+                                          }}
+                                        >
+                                          <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', minWidth: '130px' }}>
+                                            <span style={{ fontSize: '10px', fontWeight: 700, color: '#0284c7', letterSpacing: '.04em', textTransform: 'uppercase' }}>Lead ID</span>
+                                            <span style={{ fontSize: '13px', fontWeight: 600, color: '#0f172a' }}>{leadId}</span>
+                                          </div>
 
-                                </div>
+                                          <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', flex: '1 1 150px' }}>
+                                            <span style={{ fontSize: '10px', fontWeight: 700, color: '#64748b', letterSpacing: '.04em', textTransform: 'uppercase' }}>DGO</span>
+                                            <span style={{ fontSize: '13px', color: '#1e293b' }}>{leadData.dgoName || '—'}</span>
+                                          </div>
+
+                                          <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', flex: '1 1 130px' }}>
+                                            <span style={{ fontSize: '10px', fontWeight: 700, color: '#64748b', letterSpacing: '.04em', textTransform: 'uppercase' }}>Mob</span>
+                                            <span style={{ fontSize: '13px', color: '#1e293b' }}>{leadData.dgoMobile || '—'}</span>
+                                          </div>
+
+                                          <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', alignItems: 'flex-end' }}>
+                                            <span style={{ fontSize: '10px', fontWeight: 700, color: '#64748b', letterSpacing: '.04em', textTransform: 'uppercase' }}>Sheets</span>
+                                            <span style={{ fontSize: '13.5px', fontWeight: 700, color: '#0f172a', whiteSpace: 'nowrap' }}>{leadData.total.toFixed(1)}</span>
+                                          </div>
+
+                                          <button
+                                            onClick={() => {
+                                              if (leadData.isConverted) {
+                                                setReconversionModal({ show: true, sourceSku: sku, maxQty: leadData.total, reason: '' });
+                                                return;
+                                              }
+                                              openTransferModal(sku, leadData.total);
+                                            }}
+                                            style={{
+                                              background: leadData.isConverted ? '#d97706' : '#0284c7', color: '#ffffff', border: 'none',
+                                              borderRadius: '6px', padding: '7px 14px', fontSize: '12px', cursor: 'pointer',
+                                              fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: '5px', flexShrink: 0,
+                                              boxShadow: leadData.isConverted ? '0 2px 4px rgba(217, 119, 6, 0.2)' : '0 2px 4px rgba(2, 132, 199, 0.2)'
+                                            }}
+                                          >
+                                            {leadData.isConverted ? '↻ Reconvert' : '✏️ Convert Product'}
+                                          </button>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  </div>
+                                ) : (
+                                  <div style={{
+                                    display: 'flex',
+                                    justify: 'space-between',
+                                    alignItems: 'center',
+                                    flexWrap: 'wrap',
+                                    gap: '12px'
+                                  }}>
+
+                                    {/* Product SKU Name */}
+                                    <div
+                                      title={sku}
+                                      style={{
+                                        flex: '1 1 260px',
+                                        color: '#0f172a',
+                                        fontWeight: 500,
+                                        lineHeight: '1.4',
+                                        wordBreak: 'break-word',
+                                        overflowWrap: 'anywhere'
+                                      }}
+                                    >
+                                      {sku}
+                                    </div>
+
+                                    {/* Sheet Count Container */}
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexShrink: 0, marginLeft: 'auto' }}>
+                                      <span style={{ fontWeight: 600, color: '#0f172a', whiteSpace: 'nowrap' }}>
+                                        {total.toFixed(1)} Sheets
+                                      </span>
+                                    </div>
+
+                                  </div>
+                                )}
                               </td>
                             </tr>
                           );

@@ -859,9 +859,7 @@ const runClaimProcessor = async () => {
       const leadStatus = matchingLead?.lead_status ? matchingLead.lead_status.toString().trim() : 'Unknown';
       let matchKey = aggressiveNormalize(fileProductCode);
 
-      // =========================================================================
       // NATURE'S SIGNATURE DIRECT BYPASS & PRICE MATRIX LOOKUP
-      // =========================================================================
       let unitRatePrice = 0;
 
       if (isNatureSignature) {
