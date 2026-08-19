@@ -23,7 +23,7 @@ const ArchitectAccounts = () => {
   const [architectsList, setArchitectsList] = useState([]);
   const [decorativeMasterList, setDecorativeMasterList] = useState([]);
 
-  // Conversion Percentage Tab State ('7%' for standard, '10%' for Exception)
+  // Conversion Percentage Tab State ('7%' Payout, '5% Payout', '10%' Payout)
   const [conversionTab, setConversionTab] = useState('7%');
 
   // Custom React Modal Confirmation State
@@ -181,13 +181,25 @@ const ArchitectAccounts = () => {
   // Fetch Master Decorative Products
   const fetchMasterDecorativeProducts = async () => {
     try {
-      const { data, error } = await supabase
-        .from('product_sku_master')
-        .select('sku, size, price, percentage')
-        .ilike('code', '%ecorative%');
+      // Supabase caps a single request at 1000 rows — decorative products alone
+      // have crossed that, so page through with .range() or newer percentage
+      // tiers (added with the highest ids) silently disappear from this list.
+      let data = [];
+      const pageSize = 1000;
+      for (let from = 0; ; from += pageSize) {
+        const { data: pageData, error } = await supabase
+          .from('product_sku_master')
+          .select('sku, size, price, percentage')
+          .ilike('code', '%ecorative%')
+          .order('id', { ascending: true })
+          .range(from, from + pageSize - 1);
 
-      if (error) throw error;
-      setDecorativeMasterList(data || []);
+        if (error) throw error;
+        data = data.concat(pageData || []);
+        if (!pageData || pageData.length < pageSize) break;
+      }
+
+      setDecorativeMasterList(data);
     } catch (err) {
       console.error("Failed to load decorative master list:", err.message);
     }
@@ -203,10 +215,15 @@ const ArchitectAccounts = () => {
     const skuStr = (item.sku || '').toUpperCase();
     const sizeStr = (item.size || '').toUpperCase();
 
+    const isTagged10 = percStr.includes('10') || skuStr.includes('10%') || skuStr.includes('10 %') || sizeStr.includes('10%');
+    const isTagged5 = percStr.includes('5') || skuStr.includes('5%') || skuStr.includes('5 %') || sizeStr.includes('5%');
+
     if (tab === '10%') {
-      return percStr.includes('10') || skuStr.includes('10%') || skuStr.includes('10 %') || sizeStr.includes('10%');
+      return isTagged10;
+    } else if (tab === '5%') {
+      return isTagged5;
     } else {
-      return percStr.includes('7') || skuStr.includes('7%') || skuStr.includes('7 %') || sizeStr.includes('7%') || (!percStr.includes('10') && !skuStr.includes('10%'));
+      return percStr.includes('7') || skuStr.includes('7%') || skuStr.includes('7 %') || sizeStr.includes('7%') || (!isTagged10 && !isTagged5);
     }
   };
 
@@ -293,7 +310,8 @@ const ArchitectAccounts = () => {
       transferQty: maxQty.toString(),
       reconversionReason,
     });
-    setConversionTab('7%');
+    // Delhi architects default onto the 7% tab; every other state defaults onto 5%.
+    setConversionTab(isDelhiArchitect ? '7%' : '5%');
     setTargetSkuSearch('');
     setTargetDropdownOpen(false);
   };
@@ -344,7 +362,7 @@ const ArchitectAccounts = () => {
 
       // Extract target rate & percentage
       const targetRate = targetMasterProduct ? parseFloat(targetMasterProduct.price || 0) : 0;
-      const targetPercentage = targetMasterProduct?.percentage || conversionTab; // e.g., '7%' or '10%'
+      const targetPercentage = targetMasterProduct?.percentage || conversionTab; // e.g., '7%', '5%' or '10%'
       
       const exactTargetSku = formatSkuForDB(transferState.targetSku);
 
@@ -892,6 +910,13 @@ const ArchitectAccounts = () => {
 
   const uniqueStates = [...new Set(architectsList.map(item => item.state).filter(Boolean))];
 
+  // Delhi-based architects get the 10% Exception tab in the Convert modal;
+  // every other state only sees 5%/7%.
+  const selectedArchitectState = architectsList.find(
+    (a) => a.architect_name === detailsModal.architectName
+  )?.state || '';
+  const isDelhiArchitect = selectedArchitectState.trim().toLowerCase() === 'delhi';
+
   // Target SKUs filtered for Searchable Dropdown & Selected Rate Percentage Tab
   const filteredTargetSkus = decorativeMasterList
     .filter(item => {
@@ -1211,12 +1236,35 @@ const ArchitectAccounts = () => {
               </div>
             </div>
 
-            {/* Percentage Type Switcher Tabs (7% Standard vs 10% Exception) */}
+            {/* Percentage Type Switcher Tabs (7% Payout vs 5% Payout vs 10% Payout) */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
               <label style={{ fontSize: '13px', fontWeight: 600, color: '#334155' }}>
                 Conversion Rate Type <span style={{ color: '#ef4444' }}>*</span>
               </label>
               <div style={{ display: 'flex', gap: '10px' }}>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setConversionTab('5%');
+                    setTransferState(prev => ({ ...prev, targetSku: '' }));
+                    setTargetSkuSearch('');
+                  }}
+                  style={{
+                    flex: 1,
+                    padding: '8px 14px',
+                    borderRadius: '8px',
+                    fontSize: '13px',
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                    border: '1.5px solid',
+                    borderColor: conversionTab === '5%' ? '#16a34a' : '#cbd5e1',
+                    background: conversionTab === '5%' ? '#dcfce7' : '#ffffff',
+                    color: conversionTab === '5%' ? '#15803d' : '#64748b',
+                    transition: 'all 0.15s ease'
+                  }}
+                >
+                  5% Payout
+                </button>
                 <button
                   type="button"
                   onClick={() => {
@@ -1238,38 +1286,40 @@ const ArchitectAccounts = () => {
                     transition: 'all 0.15s ease'
                   }}
                 >
-                  Standard (7%)
+                  7% Payout
                 </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setConversionTab('10%');
-                    setTransferState(prev => ({ ...prev, targetSku: '' }));
-                    setTargetSkuSearch('');
-                  }}
-                  style={{
-                    flex: 1,
-                    padding: '8px 14px',
-                    borderRadius: '8px',
-                    fontSize: '13px',
-                    fontWeight: 600,
-                    cursor: 'pointer',
-                    border: '1.5px solid',
-                    borderColor: conversionTab === '10%' ? '#d97706' : '#cbd5e1',
-                    background: conversionTab === '10%' ? '#fef3c7' : '#ffffff',
-                    color: conversionTab === '10%' ? '#b45309' : '#64748b',
-                    transition: 'all 0.15s ease'
-                  }}
-                >
-                  ⚠️ Exception (10%)
-                </button>
+                {isDelhiArchitect && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setConversionTab('10%');
+                      setTransferState(prev => ({ ...prev, targetSku: '' }));
+                      setTargetSkuSearch('');
+                    }}
+                    style={{
+                      flex: 1,
+                      padding: '8px 14px',
+                      borderRadius: '8px',
+                      fontSize: '13px',
+                      fontWeight: 600,
+                      cursor: 'pointer',
+                      border: '1.5px solid',
+                      borderColor: conversionTab === '10%' ? '#d97706' : '#cbd5e1',
+                      background: conversionTab === '10%' ? '#fef3c7' : '#ffffff',
+                      color: conversionTab === '10%' ? '#b45309' : '#64748b',
+                      transition: 'all 0.15s ease'
+                    }}
+                  >
+                  10% Payout
+                  </button>
+                )}
               </div>
             </div>
 
             {/* Target SKU Selection with Searchable Combobox */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', position: 'relative' }} ref={dropdownRef}>
               <label style={{ fontSize: '13px', fontWeight: 600, color: '#334155' }}>
-                Search & Select Target Decorative SKU ({conversionTab === '10%' ? '10% Exception' : '7% Standard'}) <span style={{ color: '#ef4444' }}>*</span>
+                Search & Select Target Decorative SKU ({conversionTab === '10%' ? '10% Payout' : conversionTab === '5%' ? '5% Payout' : '7% Payout'}) <span style={{ color: '#ef4444' }}>*</span>
               </label>
 
               {/* Text Search Bar Input */}
@@ -1332,7 +1382,7 @@ const ArchitectAccounts = () => {
                 }}>
                   {filteredTargetSkus.length === 0 ? (
                     <div style={{ padding: '14px', textAlign: 'center', color: '#94a3b8', fontSize: '13px' }}>
-                      No matching decorative products found for {conversionTab === '10%' ? '10%' : '7%'}.
+                      No matching decorative products found for {conversionTab}.
                     </div>
                   ) : (
                     filteredTargetSkus.map((item) => (

@@ -54,12 +54,21 @@ const MasterDataPage = ({ exportMasterData }) => {
   // --- Fetch Engine ---
   const fetchMasterData = async () => {
     try {
-      const { data, error } = await supabase
-        .from("product_sku_master")
-        .select("*")
-        .order("id", { ascending: true });
+      // Supabase caps a single request at 1000 rows — page through with
+      // .range() so tables larger than that (this one has 1300+) load fully.
+      let data = [];
+      const pageSize = 1000;
+      for (let from = 0; ; from += pageSize) {
+        const { data: pageData, error } = await supabase
+          .from("product_sku_master")
+          .select("*")
+          .order("id", { ascending: true })
+          .range(from, from + pageSize - 1);
 
-      if (error) throw error;
+        if (error) throw error;
+        data = data.concat(pageData || []);
+        if (!pageData || pageData.length < pageSize) break;
+      }
 
       if (data && data.length > 0) {
         setTableData(data);
@@ -159,110 +168,216 @@ const handleFileChange = (event) => {
         const data = new Uint8Array(e.target.result);
         const workbook = XLSX.read(data, { type: "array" });
 
-        const firstSheetName = workbook.SheetNames[0];
-        const worksheet = workbook.Sheets[firstSheetName];
+        const normalizeHeader = (h) =>
+          (h || "").toString().trim().toLowerCase().replace(/\s+/g, "");
 
-        const rawRows = XLSX.utils.sheet_to_json(worksheet, {
-          header: 1,
-          defval: null,
-        });
+        // Veneer payout sheets (e.g. "Nature Signature 32 sq ft") carry a
+        // veneer name + a per-percentage payout column instead of Code/SKU.
+        // Their rows must be matched against the existing decorative master
+        // rows (which already own the correct group/code/sku), never invented.
+        const deriveVeneerTagFromSheetName = (name) => {
+          const upper = name.toUpperCase();
+          if (upper.includes("NATURE")) return "NATURESIGNATURE";
+          if (upper.includes("MASTERPIECE")) return "MASTERPIECE";
+          return null;
+        };
+        const deriveSizeFromSheetName = (name) => {
+          if (/32/.test(name)) return "32mm";
+          if (/40/.test(name)) return "40mm";
+          return null;
+        };
 
-        if (rawRows.length === 0) {
-          throw new Error("The selected file is empty.");
-        }
+        let decorativeLookup = null;
+        const fetchDecorativeLookup = async () => {
+          if (decorativeLookup) return decorativeLookup;
 
-        // Find the column header row dynamically
-        let headerRowIndex = -1;
-        for (let i = 0; i < rawRows.length; i++) {
-          const processedHeaders = rawRows[i].map(
-            (h) => h?.toString().trim().toLowerCase() || ""
-          );
-          if (
-            processedHeaders.includes("sku") &&
-            (processedHeaders.includes("code") || processedHeaders.includes("item code"))
-          ) {
-            headerRowIndex = i;
-            break;
+          // Supabase caps a single request at 1000 rows — decorative products
+          // alone have crossed that, so this must page through with .range().
+          let decorativeRows = [];
+          const pageSize = 1000;
+          for (let from = 0; ; from += pageSize) {
+            const { data: pageData, error: decorativeErr } = await supabase
+              .from("product_sku_master")
+              .select("group, code, sku, size")
+              .eq("code", "decorative")
+              .order("id", { ascending: true })
+              .range(from, from + pageSize - 1);
+            if (decorativeErr) throw decorativeErr;
+            decorativeRows = decorativeRows.concat(pageData || []);
+            if (!pageData || pageData.length < pageSize) break;
           }
-        }
 
-        if (headerRowIndex === -1) {
-          throw new Error(
-            "Could not find column header row. Ensure 'SKU' and 'Code' columns are present."
-          );
-        }
-
-        const fileHeaders = rawRows[headerRowIndex].map(
-          (h) => h?.toString().trim().toLowerCase() || ""
-        );
+          decorativeLookup = new Map();
+          (decorativeRows || []).forEach((r) => {
+            const parts = String(r.sku || "").split("-");
+            if (parts.length !== 4) return;
+            const key = `${parts[1]}|${parts[2]}|${parts[3]}`;
+            if (!decorativeLookup.has(key)) {
+              decorativeLookup.set(key, { group: r.group, code: r.code, sku: r.sku, size: r.size });
+            }
+          });
+          return decorativeLookup;
+        };
 
         const payload = [];
+        const skippedSheets = [];
+        const unmatchedVeneers = [];
 
-        // Parse data rows below the header
-        for (let i = headerRowIndex + 1; i < rawRows.length; i++) {
-          const row = rawRows[i];
-          if (!row || row.every((cell) => cell === null || cell === "")) continue;
+        for (const sheetName of workbook.SheetNames) {
+          const worksheet = workbook.Sheets[sheetName];
+          const rawRows = XLSX.utils.sheet_to_json(worksheet, {
+            header: 1,
+            defval: null,
+          });
+          if (rawRows.length === 0) continue;
 
-          const getValue = (possibleNames) => {
+          // Find the column header row dynamically
+          let headerRowIndex = -1;
+          let fileHeaders = [];
+          for (let i = 0; i < rawRows.length; i++) {
+            const processedHeaders = rawRows[i].map(
+              (h) => h?.toString().trim().toLowerCase() || ""
+            );
+            if (processedHeaders.some((h) => h.includes("veneer name"))) {
+              headerRowIndex = i;
+              fileHeaders = processedHeaders;
+              break;
+            }
+            if (
+              processedHeaders.includes("sku") &&
+              (processedHeaders.includes("code") || processedHeaders.includes("item code"))
+            ) {
+              headerRowIndex = i;
+              fileHeaders = processedHeaders;
+              break;
+            }
+          }
+
+          if (headerRowIndex === -1) continue; // sheet has no recognizable header, skip it
+
+          const normalizedHeaders = fileHeaders.map(normalizeHeader);
+          const isVeneerPayoutSheet = fileHeaders.some((h) => h.includes("veneer name"));
+
+          if (isVeneerPayoutSheet) {
+            const tag = deriveVeneerTagFromSheetName(sheetName);
+            const sheetSize = deriveSizeFromSheetName(sheetName);
+            const veneerNameIdx = normalizedHeaders.findIndex((h) => h.includes("veneername"));
+            const sizeColIdx = normalizedHeaders.findIndex((h) => h === "size" || h === "thickness");
+            const payout5Idx = normalizedHeaders.findIndex((h) => h === "5%payout");
+
+            if (!tag || payout5Idx === -1) {
+              skippedSheets.push(sheetName);
+              continue;
+            }
+
+            const lookup = await fetchDecorativeLookup();
+
+            for (let i = headerRowIndex + 1; i < rawRows.length; i++) {
+              const row = rawRows[i];
+              if (!row || row.every((cell) => cell === null || cell === "")) continue;
+
+              const rawName = row[veneerNameIdx];
+              if (!rawName) continue;
+              const cleanName = rawName.toString().trim().toUpperCase();
+
+              const rowSize =
+                sheetSize || (sizeColIdx !== -1 && row[sizeColIdx] ? row[sizeColIdx].toString().trim() : null);
+              if (!rowSize) {
+                unmatchedVeneers.push(`${cleanName} (size not found)`);
+                continue;
+              }
+
+              const rawPayout = row[payout5Idx];
+              if (rawPayout === null || rawPayout === undefined || rawPayout === "") continue;
+              const priceNum = parseFloat(rawPayout.toString().replace(/[^0-9.]/g, "")) || 0;
+
+              const existing = lookup.get(`${tag}|${cleanName}|${rowSize}`);
+              if (!existing) {
+                unmatchedVeneers.push(`${cleanName} (${rowSize})`);
+                continue;
+              }
+
+              payload.push({
+                group: existing.group,
+                code: existing.code,
+                sku: existing.sku,
+                size: existing.size,
+                price: priceNum,
+                percentage: "5%",
+                updated_by: currentUserName,
+              });
+            }
+            continue;
+          }
+
+          // Standard Code/SKU master sheet — unchanged generic parsing
+          const getValue = (row, possibleNames) => {
             const index = fileHeaders.findIndex((h) => possibleNames.includes(h));
             return index !== -1 && row[index] !== undefined ? row[index] : null;
           };
 
-          const rawPriceVal = getValue(["price", "rate", "amount"]);
-          const sanitizedPriceStr =
-            rawPriceVal !== null ? rawPriceVal.toString().replace(/[^0-9.]/g, "") : "0";
-          const finalPriceNum = parseFloat(sanitizedPriceStr) || 0;
+          for (let i = headerRowIndex + 1; i < rawRows.length; i++) {
+            const row = rawRows[i];
+            if (!row || row.every((cell) => cell === null || cell === "")) continue;
 
-          const rawCode = getValue(["code", "item code"]);
-          const rawSku = getValue(["sku", "sku name", "item description"]);
-          const rawSize = getValue(["size", "thickness"]);
+            const rawPriceVal = getValue(row, ["price", "rate", "amount"]);
+            const sanitizedPriceStr =
+              rawPriceVal !== null ? rawPriceVal.toString().replace(/[^0-9.]/g, "") : "0";
+            const finalPriceNum = parseFloat(sanitizedPriceStr) || 0;
 
-          // ✅ Extract & Format Percentage
-          const rawPercentage = getValue([
-            "percentage",
-            "percent",
-            "payout %",
-            "payout%",
-            "%",
-            "discount %",
-          ]);
+            const rawCode = getValue(row, ["code", "item code"]);
+            const rawSku = getValue(row, ["sku", "sku name", "item description"]);
+            const rawSize = getValue(row, ["size", "thickness"]);
 
-          let formattedPercentage = null;
-          if (
-            rawPercentage !== null &&
-            rawPercentage !== undefined &&
-            rawPercentage !== ""
-          ) {
-            if (typeof rawPercentage === "number") {
-              formattedPercentage =
-                rawPercentage < 1
-                  ? `${Math.round(rawPercentage * 100)}%`
-                  : `${rawPercentage}%`;
-            } else {
-              formattedPercentage = rawPercentage.toString().trim();
+            // ✅ Extract & Format Percentage
+            const rawPercentage = getValue(row, [
+              "percentage",
+              "percent",
+              "payout %",
+              "payout%",
+              "%",
+              "discount %",
+            ]);
+
+            let formattedPercentage = null;
+            if (
+              rawPercentage !== null &&
+              rawPercentage !== undefined &&
+              rawPercentage !== ""
+            ) {
+              if (typeof rawPercentage === "number") {
+                formattedPercentage =
+                  rawPercentage < 1
+                    ? `${Math.round(rawPercentage * 100)}%`
+                    : `${rawPercentage}%`;
+              } else {
+                formattedPercentage = rawPercentage.toString().trim();
+              }
             }
+
+            if (!rawSku || !rawCode) continue;
+
+            payload.push({
+              group: (getValue(row, ["group", "product group", "grp"]) || "PLYWOOD")
+                .toString()
+                .trim()
+                .toUpperCase(),
+              code: rawCode.toString().trim(),
+              sku: rawSku.toString().trim(),
+              size: rawSize ? rawSize.toString().trim() : "—",
+              price: finalPriceNum,
+              percentage: formattedPercentage, // ✅ Map percentage directly to DB column
+              updated_by: currentUserName,
+            });
           }
-
-          if (!rawSku || !rawCode) continue;
-
-          const mappedRow = {
-            group: (getValue(["group", "product group", "grp"]) || "PLYWOOD")
-              .toString()
-              .trim()
-              .toUpperCase(),
-            code: rawCode.toString().trim(),
-            sku: rawSku.toString().trim(),
-            size: rawSize ? rawSize.toString().trim() : "—",
-            price: finalPriceNum,
-            percentage: formattedPercentage, // ✅ Map percentage directly to DB column
-            updated_by: currentUserName,
-          };
-
-          payload.push(mappedRow);
         }
 
         if (payload.length === 0) {
-          throw new Error("No structured product entries parsed from data rows.");
+          throw new Error(
+            skippedSheets.length > 0 || unmatchedVeneers.length > 0
+              ? "No rows could be matched against the existing master data. Check console for the unmatched list."
+              : "No structured product entries parsed from data rows."
+          );
         }
 
         // ✅ Perform Upsert with composite conflict resolution
@@ -272,13 +387,21 @@ const handleFileChange = (event) => {
 
         if (error) throw error;
 
+        if (unmatchedVeneers.length > 0) {
+          console.warn("Unmatched veneer rows during master upload:", unmatchedVeneers);
+        }
+
         // Telemetry Logging
         await logTelemetry(
           "UPLOAD_MASTER_DATA",
           `Product SKU dataset synced. Processed ${payload.length} rows successfully by ${currentUserName}.`
         );
 
-        showToast(`Data uploaded successfully! Synced ${payload.length} master rows.`);
+        showToast(
+          unmatchedVeneers.length > 0
+            ? `Synced ${payload.length} rows. ${unmatchedVeneers.length} veneer row(s) had no matching existing SKU — check console.`
+            : `Data uploaded successfully! Synced ${payload.length} master rows.`
+        );
         await fetchMasterData();
       } catch (error) {
         showToast(`Parsing Pipeline Exception: ${error.message}`, "error");

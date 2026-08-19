@@ -669,9 +669,13 @@ const runClaimProcessor = async () => {
       'claim_no'
     );
     
-    const { data: dbSkus, error: errSkus } = await supabase.from('product_sku_master').select('sku, price');
-
-    if (errSkus) {
+    // Plain (unpaginated) selects cap at 1000 rows in Supabase — this table has
+    // grown past that, so it must go through the same paginated fetch as the
+    // other tables or SKUs past row 1000 silently price out at 0.
+    let dbSkus;
+    try {
+      dbSkus = await fetchAllRecordsOptimized('product_sku_master', 'sku, price', 'id');
+    } catch (errSkus) {
       throw new Error("Unable to pull core dataset tables from Supabase database storage.");
     }
 
