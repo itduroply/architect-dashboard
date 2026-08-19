@@ -1,6 +1,12 @@
 import React, { useState, useEffect } from 'react';
-import { supabase } from '../../lib/supbase'; // Adjust this path to match your project directory
+import { supabase } from '../../lib/supbase';
 import * as XLSX from 'xlsx';
+import './UploadCalculate.css';
+import {
+  Zap, Loader2, UploadCloud, CheckCircle2, Circle, ClipboardList, FileSpreadsheet,
+  Smartphone, IdCard, X, Layers, Coins, Users, Flag, ArrowUpFromLine, AlertTriangle,
+  Info, PackageSearch
+} from 'lucide-react';
 
 const UploadCalculate = () => {
   // Operational processing states
@@ -1107,71 +1113,51 @@ const runClaimProcessor = async () => {
   };
 
   return (
-    <div className="page" id="page-claims" style={{ padding: '20px' }}>
+    <div className="ucx-page" id="page-claims">
 
-      {/* Dynamic Floating Snackbar Notification Alerts */}
+      {/* Floating toast notification */}
       {snackbar.show && (
-        <div style={{
-          position: 'fixed',
-          top: '58px',
-          right: '24px',
-          zIndex: 9999,
-          background: snackbar.type === 'success' ? 'var(--green)' : snackbar.type === 'error' ? 'var(--red)' : 'var(--blue)',
-          color: '#fff',
-          padding: '12px 20px',
-          borderRadius: '8px',
-          fontWeight: 500,
-          boxShadow: 'var(--shadow)'
-        }}>
-          {snackbar.message}
+        <div className={`ucx-toast ucx-toast-${snackbar.type}`}>
+          <span className="ucx-toast-icon">
+            {snackbar.type === 'success' ? <CheckCircle2 size={16} /> : snackbar.type === 'error' ? <AlertTriangle size={16} /> : <Info size={16} />}
+          </span>
+          <span>{snackbar.message}</span>
         </div>
       )}
 
-      {/* Download action ribbon */}
-      <div className="dl-strip">
-        <span style={{ fontSize: '11px', color: 'var(--dim)', marginRight: '4px' }}>Download:</span>
-        <button className="btn-dl" onClick={() => exportClaimOutput('output')}>⬇ Claim Output</button>
-        <button className="btn-dl" onClick={() => exportClaimOutput('flags')}>⬇ Flags &amp; Issues</button>
-        <button className="btn-dl" onClick={() => exportClaimOutput('architect')}>⬇ Architect Summary</button>
-        <div className="dl-sep"></div>
-        <button className="btn-dl btn-dl-primary" onClick={() => exportClaimOutput('full')}>⬇ Full Claim Report</button>
-      </div>
-
-      {/* Information Header Block */}
-      <div className="infobox" style={{ marginBottom: '16px', display: 'flex', gap: '18px', flexWrap: 'wrap', alignItems: 'center' }}>
-        <div style={{ fontSize: '13px', fontWeight: 600, whiteSpace: 'nowrap' }}>
-          🔗 Automated Claims Engine
-        </div>
-        <div style={{ fontSize: '12px', lineHeight: 1.85, flex: 1, minWidth: '240px' }}>
-          <strong>Step 1 — Configure Rates</strong>: Synced with your dynamic Payout Rate Matrix master schema. &nbsp;·&nbsp;
-          <strong>Step 2 — Ingest Relationships</strong>: Drop your Lead Master matching unique Lead IDs with linked Architect metrics. &nbsp;·&nbsp;
-          <strong>Step 3 — Compute Allocations</strong>: Hit processing to automatically isolate entries marked with absolute <strong>APPROVED</strong> or <strong>SANCTIONED</strong> statuses, resolve custom dimensions, and build the payout registry.
+      {/* Page header */}
+      <div className="ucx-header">
+        <div className="ucx-header-icon"><Layers size={22} /></div>
+        <div className="ucx-header-text">
+          <div className="ucx-header-title">Upload &amp; Calculate</div>
+          <div className="ucx-header-sub">Bring in the Lead Master and DMI Claim sheets, then compute architect payouts against the live rate matrix.</div>
         </div>
         <button
-          className="btn btn-gold"
+          className="ucx-btn ucx-btn-primary"
           onClick={runClaimProcessor}
           disabled={isProcessing}
           id="btnRunClaims"
-          style={{ whiteSpace: 'nowrap' }}
         >
-          {isProcessing ? '⏳ Computing...' : '⚡ Process Claims'}
+          {isProcessing ? (<><Loader2 size={15} className="ucx-spin" /> Computing…</>) : (<><Zap size={15} /> Process Claims</>)}
         </button>
       </div>
 
-      {/* Upload Drag Zones Grid Section */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '16px', marginBottom: '16px' }}>
+      {/* Required uploads */}
+      <div className="ucx-section">
+        <div className="ucx-section-label"><span className="ucx-step">1</span> Required Data</div>
+        <div className="ucx-grid-2">
 
-        {/* ZONE A: Lead Master Ingestion */}
-        <div className="card">
-          <div className="card-hd">
-            <div className="card-icon">📋</div>
-            <div>
-              <div className="card-title" style={{ fontSize: '14px' }}>Dataset 1 — Lead Master</div>
-              <div className="card-sub">Contains Lead ID · Architect mapping · DMI mapping</div>
+          {/* ZONE A: Lead Master Ingestion */}
+          <div className="ucx-upload-card">
+            <div className="ucx-upload-hd">
+              <div className="ucx-upload-icon"><ClipboardList size={18} /></div>
+              <div>
+                <div className="ucx-upload-title">Lead Master</div>
+                <div className="ucx-upload-desc">Lead ID · Architect mapping · DMI mapping</div>
+              </div>
             </div>
-          </div>
-          <div className="card-body">
-            <div className={`dropzone${isUploadingLead ? ' uploading' : ''}`} id="dzLead">
+
+            <div className={`ucx-dropzone${isUploadingLead ? ' is-uploading' : ''}`} id="dzLead">
               <input
                 type="file"
                 id="fileLeadMaster"
@@ -1179,38 +1165,37 @@ const runClaimProcessor = async () => {
                 onChange={handleLeadMasterUpload}
                 disabled={isUploadingLead}
               />
-              <span className="dz-icon">📋</span>
-              <div className="dz-title">
-                {isUploadingLead ? `Uploading to Database… ${uploadProgress}%` : 'Drop Lead Detail Report'}
+              <div className="ucx-dz-icon">
+                {isUploadingLead ? <Loader2 size={20} className="ucx-spin" /> : <UploadCloud size={20} />}
               </div>
-              <div className="dz-sub">.xlsx · .xls · .csv — Lead ID · Architect · DMI</div>
+              <div className="ucx-dz-title">
+                {isUploadingLead ? `Uploading to database… ${uploadProgress}%` : 'Drop Lead Detail Report'}
+              </div>
+              <div className="ucx-dz-sub">.xlsx · .xls · .csv</div>
               {isUploadingLead && (
-                <div className="pbar-wrap" style={{ marginTop: '10px' }}>
-                  <div className="pbar" style={{ width: `${uploadProgress}%` }}></div>
-                </div>
+                <div className="ucx-dz-progress"><div className="ucx-dz-progress-bar" style={{ width: `${uploadProgress}%` }}></div></div>
               )}
             </div>
 
-            <div className={`status ${leadFileLoaded ? 'ok' : ''}`} id="statusLead">
-              <div className="s-dot"></div>
+            <div className={`ucx-status${leadFileLoaded ? ' is-ok' : ''}`} id="statusLead">
+              {leadFileLoaded ? <CheckCircle2 size={14} /> : <Circle size={8} />}
               <span id="statusLeadTxt">
-                {leadFileLoaded ? 'New Lead Master file database active' : 'Using historical backend rows unless dynamic sheets are dropped'}
+                {leadFileLoaded ? 'New Lead Master file active for this run' : 'Using historical records until a new file is dropped'}
               </span>
             </div>
           </div>
-        </div>
 
-        {/* ZONE B: DMI Claim Sheet Ingestion */}
-        <div className="card">
-          <div className="card-hd">
-            <div className="card-icon">📊</div>
-            <div>
-              <div className="card-title" style={{ fontSize: '14px' }}>Dataset 2 — DMI Claim Sheet</div>
-              <div className="card-sub">Contains Lead ID · Approved Qty · Claim Status</div>
+          {/* ZONE B: DMI Claim Sheet Ingestion */}
+          <div className="ucx-upload-card">
+            <div className="ucx-upload-hd">
+              <div className="ucx-upload-icon"><FileSpreadsheet size={18} /></div>
+              <div>
+                <div className="ucx-upload-title">DMI Claim Sheet</div>
+                <div className="ucx-upload-desc">Lead ID · Approved Qty · Claim Status</div>
+              </div>
             </div>
-          </div>
-          <div className="card-body">
-            <div className={`dropzone${isUploadingDmi ? ' uploading' : ''}`} id="dzDmi">
+
+            <div className={`ucx-dropzone${isUploadingDmi ? ' is-uploading' : ''}`} id="dzDmi">
               <input
                 type="file"
                 id="fileDmiClaim"
@@ -1218,65 +1203,68 @@ const runClaimProcessor = async () => {
                 onChange={handleDmiClaimUpload}
                 disabled={isUploadingDmi}
               />
-              <span className="dz-icon">📊</span>
-              <div className="dz-title">
-                {isUploadingDmi ? `Uploading to Database… ${uploadProgress}%` : 'Drop Influencer Claim Stage Detail Report'}
+              <div className="ucx-dz-icon">
+                {isUploadingDmi ? <Loader2 size={20} className="ucx-spin" /> : <UploadCloud size={20} />}
               </div>
-              <div className="dz-sub">.xlsx · .xls · .csv — Lead ID · Approved Qty · Status</div>
+              <div className="ucx-dz-title">
+                {isUploadingDmi ? `Uploading to database… ${uploadProgress}%` : 'Drop Influencer Claim Stage Report'}
+              </div>
+              <div className="ucx-dz-sub">.xlsx · .xls · .csv</div>
               {isUploadingDmi && (
-                <div className="pbar-wrap" style={{ marginTop: '10px' }}>
-                  <div className="pbar" style={{ width: `${uploadProgress}%` }}></div>
-                </div>
+                <div className="ucx-dz-progress"><div className="ucx-dz-progress-bar" style={{ width: `${uploadProgress}%` }}></div></div>
               )}
             </div>
 
-            <div className={`status ${dmiFileLoaded ? 'ok' : ''}`} id="statusDmi">
-              <div className="s-dot"></div>
+            <div className={`ucx-status${dmiFileLoaded ? ' is-ok' : ''}`} id="statusDmi">
+              {dmiFileLoaded ? <CheckCircle2 size={14} /> : <Circle size={8} />}
               <span id="statusDmiTxt">
-                {dmiFileLoaded ? 'New active DMI Claim records operational' : 'Using database records unless new files are provided'}
+                {dmiFileLoaded ? 'New DMI Claim records active for this run' : 'Using database records until a new file is dropped'}
               </span>
             </div>
           </div>
-        </div>
 
+        </div>
       </div>
 
       {/* ZONE C & D: Architect Mobile Mapping + DGO Info — both optional, only
           refreshed ~2x/month, so they stay as small collapsed controls instead
           of full-size drop zones. */}
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '14px', marginBottom: '20px', alignItems: 'flex-start' }}>
+      <div className="ucx-section">
+        <div className="ucx-section-label"><span className="ucx-step ucx-step-muted">2</span> Optional · refreshed ~2×/month</div>
+        <div className="ucx-optional-row">
 
-        <div>
-          {!showArchitectMobPanel ? (
-            <button
-              type="button"
-              className="btn btn-out btn-sm"
-              onClick={() => setShowArchitectMobPanel(true)}
-            >
-              <span>📱</span>
-              <span>Update Architect Mobile Mapping</span>
-              <span className="badge b-dim">Optional · ~2×/month</span>
-              {architectMobFileLoaded && <span className="s-dot" style={{ background: 'var(--green)' }}></span>}
-            </button>
-          ) : (
-            <div className="card" style={{ maxWidth: '420px' }}>
-              <div className="card-hd">
-                <div className="card-icon">📱</div>
-                <div style={{ flex: 1 }}>
-                  <div className="card-title" style={{ fontSize: '13px' }}>Architect Mobile Numbers</div>
-                  <div className="card-sub">Optional — matches `Arct. ID` to Lead Master, needed only ~2×/month</div>
+          <div className="ucx-optional-slot">
+            {!showArchitectMobPanel ? (
+              <button
+                type="button"
+                className="ucx-upload-toggle"
+                onClick={() => setShowArchitectMobPanel(true)}
+              >
+                <div className="ucx-upload-toggle-icon"><Smartphone size={18} /></div>
+                <div className="ucx-upload-toggle-text">
+                  <div className="ucx-upload-toggle-title">Architect Mobile Mapping</div>
+                  <div className="ucx-upload-toggle-sub">Upload Excel to update mobile numbers</div>
                 </div>
-                <button
-                  type="button"
-                  className="modal-x"
-                  onClick={() => setShowArchitectMobPanel(false)}
-                  title="Collapse"
-                >
-                  ✕
-                </button>
-              </div>
-              <div className="card-body">
-                <div className={`dropzone compact${isUploadingArchitectMob ? ' uploading' : ''}`} id="dzArchitectMob">
+                {architectMobFileLoaded ? <CheckCircle2 size={17} className="ucx-chip-ok" /> : <UploadCloud size={17} className="ucx-upload-toggle-cue" />}
+              </button>
+            ) : (
+              <div className="ucx-optional-card">
+                <div className="ucx-upload-hd">
+                  <div className="ucx-upload-icon"><Smartphone size={18} /></div>
+                  <div style={{ flex: 1 }}>
+                    <div className="ucx-upload-title">Architect Mobile Numbers</div>
+                    <div className="ucx-upload-desc">Matches Arct. ID to Lead Master</div>
+                  </div>
+                  <button
+                    type="button"
+                    className="ucx-icon-btn"
+                    onClick={() => setShowArchitectMobPanel(false)}
+                    title="Collapse"
+                  >
+                    <X size={14} />
+                  </button>
+                </div>
+                <div className={`ucx-dropzone ucx-dropzone-sm${isUploadingArchitectMob ? ' is-uploading' : ''}`} id="dzArchitectMob">
                   <input
                     type="file"
                     id="fileArchitectMob"
@@ -1284,59 +1272,59 @@ const runClaimProcessor = async () => {
                     onChange={handleArchitectMobUpload}
                     disabled={isUploadingArchitectMob}
                   />
-                  <span className="dz-icon">📱</span>
-                  <div className="dz-title">
+                  <div className="ucx-dz-icon ucx-dz-icon-sm">
+                    {isUploadingArchitectMob ? <Loader2 size={16} className="ucx-spin" /> : <UploadCloud size={16} />}
+                  </div>
+                  <div className="ucx-dz-title">
                     {isUploadingArchitectMob ? `Uploading… ${uploadProgress}%` : 'Drop Architect Mobile Excel'}
                   </div>
-                  <div className="dz-sub">.xlsx · .xls · .csv — Arct. ID · Mobile No*</div>
+                  <div className="ucx-dz-sub">Arct. ID · Mobile No*</div>
                   {isUploadingArchitectMob && (
-                    <div className="pbar-wrap" style={{ marginTop: '8px' }}>
-                      <div className="pbar" style={{ width: `${uploadProgress}%` }}></div>
-                    </div>
+                    <div className="ucx-dz-progress"><div className="ucx-dz-progress-bar" style={{ width: `${uploadProgress}%` }}></div></div>
                   )}
                 </div>
-                <div className={`status ${architectMobFileLoaded ? 'ok' : ''}`}>
-                  <div className="s-dot"></div>
+                <div className={`ucx-status${architectMobFileLoaded ? ' is-ok' : ''}`}>
+                  {architectMobFileLoaded ? <CheckCircle2 size={14} /> : <Circle size={8} />}
                   <span>
                     {architectMobFileLoaded ? 'Architect ID/mobile mapping synced' : 'Upload before processing claims to write matched mobile numbers'}
                   </span>
                 </div>
               </div>
-            </div>
-          )}
-        </div>
+            )}
+          </div>
 
-        <div>
-          {!showDgoInfoPanel ? (
-            <button
-              type="button"
-              className="btn btn-out btn-sm"
-              onClick={() => setShowDgoInfoPanel(true)}
-            >
-              <span>🪪</span>
-              <span>Update DGO Info (Lead Created By Mobile)</span>
-              <span className="badge b-dim">Optional · ~2×/month</span>
-              {dgoInfoFileLoaded && <span className="s-dot" style={{ background: 'var(--green)' }}></span>}
-            </button>
-          ) : (
-            <div className="card" style={{ maxWidth: '420px' }}>
-              <div className="card-hd">
-                <div className="card-icon">🪪</div>
-                <div style={{ flex: 1 }}>
-                  <div className="card-title" style={{ fontSize: '13px' }}>DGO Info</div>
-                  <div className="card-sub">Optional — matches Login ID to `Lead Created By`, needed only ~2×/month</div>
+          <div className="ucx-optional-slot">
+            {!showDgoInfoPanel ? (
+              <button
+                type="button"
+                className="ucx-upload-toggle"
+                onClick={() => setShowDgoInfoPanel(true)}
+              >
+                <div className="ucx-upload-toggle-icon"><IdCard size={18} /></div>
+                <div className="ucx-upload-toggle-text">
+                  <div className="ucx-upload-toggle-title">DGO Info Mapping</div>
+                  <div className="ucx-upload-toggle-sub">Upload Excel for lead-created-by mobile</div>
                 </div>
-                <button
-                  type="button"
-                  className="modal-x"
-                  onClick={() => setShowDgoInfoPanel(false)}
-                  title="Collapse"
-                >
-                  ✕
-                </button>
-              </div>
-              <div className="card-body">
-                <div className={`dropzone compact${isUploadingDgoInfo ? ' uploading' : ''}`} id="dzDgoInfo">
+                {dgoInfoFileLoaded ? <CheckCircle2 size={17} className="ucx-chip-ok" /> : <UploadCloud size={17} className="ucx-upload-toggle-cue" />}
+              </button>
+            ) : (
+              <div className="ucx-optional-card">
+                <div className="ucx-upload-hd">
+                  <div className="ucx-upload-icon"><IdCard size={18} /></div>
+                  <div style={{ flex: 1 }}>
+                    <div className="ucx-upload-title">DGO Info</div>
+                    <div className="ucx-upload-desc">Matches Login ID to Lead Created By</div>
+                  </div>
+                  <button
+                    type="button"
+                    className="ucx-icon-btn"
+                    onClick={() => setShowDgoInfoPanel(false)}
+                    title="Collapse"
+                  >
+                    <X size={14} />
+                  </button>
+                </div>
+                <div className={`ucx-dropzone ucx-dropzone-sm${isUploadingDgoInfo ? ' is-uploading' : ''}`} id="dzDgoInfo">
                   <input
                     type="file"
                     id="fileDgoInfo"
@@ -1344,115 +1332,121 @@ const runClaimProcessor = async () => {
                     onChange={handleDgoInfoUpload}
                     disabled={isUploadingDgoInfo}
                   />
-                  <span className="dz-icon">🪪</span>
-                  <div className="dz-title">
+                  <div className="ucx-dz-icon ucx-dz-icon-sm">
+                    {isUploadingDgoInfo ? <Loader2 size={16} className="ucx-spin" /> : <UploadCloud size={16} />}
+                  </div>
+                  <div className="ucx-dz-title">
                     {isUploadingDgoInfo ? `Uploading… ${uploadProgress}%` : 'Drop DGO Info Excel'}
                   </div>
-                  <div className="dz-sub">.xlsx · .xls · .csv — Login ID · Mobile No · Designation</div>
+                  <div className="ucx-dz-sub">Login ID · Mobile No · Designation</div>
                   {isUploadingDgoInfo && (
-                    <div className="pbar-wrap" style={{ marginTop: '8px' }}>
-                      <div className="pbar" style={{ width: `${uploadProgress}%` }}></div>
-                    </div>
+                    <div className="ucx-dz-progress"><div className="ucx-dz-progress-bar" style={{ width: `${uploadProgress}%` }}></div></div>
                   )}
                 </div>
-                <div className={`status ${dgoInfoFileLoaded ? 'ok' : ''}`}>
-                  <div className="s-dot"></div>
+                <div className={`ucx-status${dgoInfoFileLoaded ? ' is-ok' : ''}`}>
+                  {dgoInfoFileLoaded ? <CheckCircle2 size={14} /> : <Circle size={8} />}
                   <span>
                     {dgoInfoFileLoaded ? 'DGO Info login/mobile mapping synced' : 'Upload to write mobile numbers for lead-creating staff into the ledger'}
                   </span>
                 </div>
               </div>
-            </div>
-          )}
-        </div>
+            )}
+          </div>
 
+        </div>
       </div>
 
       {/* PROCESSING ANALYTICS METRICS OUTPUT DISPLAY */}
       {showResults && (
-        <div id="claimResultSection" style={{ marginTop: '24px' }}>
+        <div className="ucx-section" id="claimResultSection">
+          <div className="ucx-section-label"><span className="ucx-step">3</span> Results</div>
 
           {/* KPI Summary Row */}
-          <div className="kpi-row kpi-5">
-            <div className="kpi">
-              <div className="kpi-lbl">Matched &amp; Approved</div>
-              <div className="kpi-val">{metrics.matchedApproved.toLocaleString('en-IN')}</div>
-              <div className="kpi-note">of {metrics.dmiRows.toLocaleString('en-IN')} claim rows</div>
+          <div className="ucx-kpi-row">
+            <div className="ucx-kpi ucx-kpi-gold">
+              <div className="ucx-kpi-icon"><CheckCircle2 size={16} /></div>
+              <div className="ucx-kpi-lbl">Matched &amp; Approved</div>
+              <div className="ucx-kpi-val">{metrics.matchedApproved.toLocaleString('en-IN')}</div>
+              <div className="ucx-kpi-note">of {metrics.dmiRows.toLocaleString('en-IN')} claim rows</div>
             </div>
-            <div className="kpi">
-              <div className="kpi-lbl">Total Sheets Volume</div>
-              <div className="kpi-val">{metrics.totalQty.toLocaleString('en-IN')}</div>
-              <div className="kpi-note">eligible sheets</div>
+            <div className="ucx-kpi ucx-kpi-blue">
+              <div className="ucx-kpi-icon"><Layers size={16} /></div>
+              <div className="ucx-kpi-lbl">Total Sheets Volume</div>
+              <div className="ucx-kpi-val">{metrics.totalQty.toLocaleString('en-IN')}</div>
+              <div className="ucx-kpi-note">eligible sheets</div>
             </div>
-            <div className="kpi">
-              <div className="kpi-lbl">Total Payout</div>
-              <div className="kpi-val">₹{metrics.totalPayout.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</div>
-              <div className="kpi-note">computed settlement</div>
+            <div className="ucx-kpi ucx-kpi-green">
+              <div className="ucx-kpi-icon"><Coins size={16} /></div>
+              <div className="ucx-kpi-lbl">Total Payout</div>
+              <div className="ucx-kpi-val">₹{metrics.totalPayout.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</div>
+              <div className="ucx-kpi-note">computed settlement</div>
             </div>
-            <div className="kpi">
-              <div className="kpi-lbl">Architects Covered</div>
-              <div className="kpi-val">{metrics.architectsCount.toLocaleString('en-IN')}</div>
-              <div className="kpi-note">unique beneficiaries</div>
+            <div className="ucx-kpi ucx-kpi-purple">
+              <div className="ucx-kpi-icon"><Users size={16} /></div>
+              <div className="ucx-kpi-lbl">Architects Covered</div>
+              <div className="ucx-kpi-val">{metrics.architectsCount.toLocaleString('en-IN')}</div>
+              <div className="ucx-kpi-note">unique beneficiaries</div>
             </div>
-            <div className="kpi">
-              <div className="kpi-lbl">Flags &amp; Issues</div>
-              <div className="kpi-val" style={{ color: metrics.flagsCount > 0 ? 'var(--red)' : 'var(--white)' }}>{metrics.flagsCount.toLocaleString('en-IN')}</div>
-              <div className="kpi-note">{metrics.zeroRateCount} zero-rate items</div>
+            <div className={`ucx-kpi ${metrics.flagsCount > 0 ? 'ucx-kpi-red' : 'ucx-kpi-dim'}`}>
+              <div className="ucx-kpi-icon"><Flag size={16} /></div>
+              <div className="ucx-kpi-lbl">Flags &amp; Issues</div>
+              <div className="ucx-kpi-val">{metrics.flagsCount.toLocaleString('en-IN')}</div>
+              <div className="ucx-kpi-note">{metrics.zeroRateCount} zero-rate items</div>
             </div>
           </div>
 
           {/* Tab View Interfaces */}
-          <div className="card">
-            <div className="card-hd" style={{ justifyContent: 'space-between' }}>
+          <div className="ucx-panel">
+            <div className="ucx-panel-hd">
               <div style={{ flex: 1 }}>
-                <div className="card-title" style={{ fontSize: '15px' }}>Claim Processing Computation Output</div>
-                <div className="card-sub">Review each computed dimension below, then push confirmed settlements to the ledger.</div>
+                <div className="ucx-panel-title">Claim Processing Computation Output</div>
+                <div className="ucx-panel-sub">Review each computed dimension below, then push confirmed settlements to the ledger.</div>
               </div>
               <button
-                className="btn btn-gold"
+                className="ucx-btn ucx-btn-primary"
                 onClick={pushClaimsToLedger}
                 disabled={isPushingLedger || payoutCalcData.length === 0}
               >
-                {isPushingLedger ? '⏳ Posting to Ledger...' : '⬆ Push Payout Matrix to Ledger'}
+                {isPushingLedger ? (<><Loader2 size={15} className="ucx-spin" /> Posting to Ledger…</>) : (<><ArrowUpFromLine size={15} /> Push Payout Matrix to Ledger</>)}
               </button>
             </div>
 
             {/* Sub Nav Tab Strip */}
-            <div className="tabbar">
-              <button className={`tabbtn ${activeTab === 'claim-output' ? 'active' : ''}`} onClick={() => setActiveTab('claim-output')}>Claim Output</button>
-              <button className={`tabbtn ${activeTab === 'claim-arch' ? 'active' : ''}`} onClick={() => setActiveTab('claim-arch')}>By Architect</button>
-              <button className={`tabbtn ${activeTab === 'claim-payout' ? 'active' : ''}`} onClick={() => setActiveTab('claim-payout')}>💰 Payout Calculation</button>
-              <button className={`tabbtn ${activeTab === 'claim-flags' ? 'active' : ''}`} onClick={() => setActiveTab('claim-flags')}>
-                Flags &amp; Issues <span className="badge b-red" style={{ marginLeft: '4px' }}>{metrics.flagsCount}</span>
+            <div className="ucx-tabs">
+              <button className={`ucx-tab${activeTab === 'claim-output' ? ' active' : ''}`} onClick={() => setActiveTab('claim-output')}>Claim Output</button>
+              <button className={`ucx-tab${activeTab === 'claim-arch' ? ' active' : ''}`} onClick={() => setActiveTab('claim-arch')}>By Architect</button>
+              <button className={`ucx-tab${activeTab === 'claim-payout' ? ' active' : ''}`} onClick={() => setActiveTab('claim-payout')}><Coins size={13} /> Payout Calculation</button>
+              <button className={`ucx-tab${activeTab === 'claim-flags' ? ' active' : ''}`} onClick={() => setActiveTab('claim-flags')}>
+                Flags &amp; Issues <span className="ucx-tab-badge">{metrics.flagsCount}</span>
               </button>
             </div>
 
             {/* Tab Pane Output Data Renderers */}
-            <div className="card-body">
+            <div className="ucx-panel-body">
               {activeTab === 'claim-output' && (
-                <div className="tbl-wrap">
-                  <table>
+                <div className="ucx-table-wrap">
+                  <table className="ucx-table">
                     <thead>
                       <tr>
                         <th>Claim No</th>
                         <th>Lead ID</th>
                         <th>Linked Architect</th>
                         <th>Product SKU</th>
-                        <th className="td-c">Approved Qty</th>
+                        <th className="ucx-c">Approved Qty</th>
                       </tr>
                     </thead>
                     <tbody>
                       {claimOutputData.map((row, i) => (
                         <tr key={i}>
-                          <td className="td-n">{row.claim_no}</td>
+                          <td className="ucx-strong">{row.claim_no}</td>
                           <td>{row.lead_id}</td>
                           <td>{row.architect}</td>
                           <td>{row.product}</td>
-                          <td className="td-c">{row.qty}</td>
+                          <td className="ucx-c">{row.qty}</td>
                         </tr>
                       ))}
                       {claimOutputData.length === 0 && (
-                        <tr><td colSpan="5" className="td-s" style={{ textAlign: 'center', padding: '24px' }}>No settlements computed yet.</td></tr>
+                        <tr><td colSpan="5"><div className="ucx-empty"><PackageSearch size={22} /><span>No settlements computed yet.</span></div></td></tr>
                       )}
                     </tbody>
                   </table>
@@ -1460,25 +1454,25 @@ const runClaimProcessor = async () => {
               )}
 
               {activeTab === 'claim-arch' && (
-                <div className="tbl-wrap">
-                  <table>
+                <div className="ucx-table-wrap">
+                  <table className="ucx-table">
                     <thead>
                       <tr>
                         <th>Architect</th>
-                        <th className="td-c">Unique Leads Covered</th>
-                        <th className="td-c">Total Volume (Sheets)</th>
+                        <th className="ucx-c">Unique Leads Covered</th>
+                        <th className="ucx-c">Total Volume (Sheets)</th>
                       </tr>
                     </thead>
                     <tbody>
                       {architectSummary.map((row, i) => (
                         <tr key={i}>
-                          <td className="td-n">{row.name}</td>
-                          <td className="td-c">{row.leadsCalculated}</td>
-                          <td className="td-c td-amt">{row.totalSheetsVolume.toFixed(2)}</td>
+                          <td className="ucx-strong">{row.name}</td>
+                          <td className="ucx-c">{row.leadsCalculated}</td>
+                          <td className="ucx-c ucx-amt">{row.totalSheetsVolume.toFixed(2)}</td>
                         </tr>
                       ))}
                       {architectSummary.length === 0 && (
-                        <tr><td colSpan="3" className="td-s" style={{ textAlign: 'center', padding: '24px' }}>No architect settlements computed yet.</td></tr>
+                        <tr><td colSpan="3"><div className="ucx-empty"><PackageSearch size={22} /><span>No architect settlements computed yet.</span></div></td></tr>
                       )}
                     </tbody>
                   </table>
@@ -1486,29 +1480,29 @@ const runClaimProcessor = async () => {
               )}
 
               {activeTab === 'claim-payout' && (
-                <div className="tbl-wrap">
-                  <table>
+                <div className="ucx-table-wrap">
+                  <table className="ucx-table">
                     <thead>
                       <tr>
                         <th>Beneficiary Name</th>
                         <th>SKU Token Reference</th>
-                        <th className="td-c">Eligible Volume</th>
-                        <th className="td-c">Matrix Rate</th>
-                        <th className="td-c">Computed Payout</th>
+                        <th className="ucx-c">Eligible Volume</th>
+                        <th className="ucx-c">Matrix Rate</th>
+                        <th className="ucx-c">Computed Payout</th>
                       </tr>
                     </thead>
                     <tbody>
                       {payoutCalcData.map((row, i) => (
                         <tr key={i}>
-                          <td className="td-n">{row.architect}</td>
+                          <td className="ucx-strong">{row.architect}</td>
                           <td>{row.product}</td>
-                          <td className="td-c">{row.qty}</td>
-                          <td className="td-c">{row.rate > 0 ? `₹${row.rate}` : <span className="td-r">₹0 (No Rule)</span>}</td>
-                          <td className="td-c td-amt td-g">₹{row.payout.toFixed(2)}</td>
+                          <td className="ucx-c">{row.qty}</td>
+                          <td className="ucx-c">{row.rate > 0 ? `₹${row.rate}` : <span className="ucx-red">₹0 (No Rule)</span>}</td>
+                          <td className="ucx-c ucx-amt ucx-green">₹{row.payout.toFixed(2)}</td>
                         </tr>
                       ))}
                       {payoutCalcData.length === 0 && (
-                        <tr><td colSpan="5" className="td-s" style={{ textAlign: 'center', padding: '24px' }}>No payout rows computed yet.</td></tr>
+                        <tr><td colSpan="5"><div className="ucx-empty"><PackageSearch size={22} /><span>No payout rows computed yet.</span></div></td></tr>
                       )}
                     </tbody>
                   </table>
@@ -1516,8 +1510,8 @@ const runClaimProcessor = async () => {
               )}
 
               {activeTab === 'claim-flags' && (
-                <div className="tbl-wrap">
-                  <table>
+                <div className="ucx-table-wrap">
+                  <table className="ucx-table">
                     <thead>
                       <tr>
                         <th>Reference Key ID</th>
@@ -1528,14 +1522,14 @@ const runClaimProcessor = async () => {
                     <tbody>
                       {flagsData.map((row, i) => (
                         <tr key={i}>
-                          <td className="td-r">{row.id}</td>
-                          <td><span className="badge b-red">{row.type}</span></td>
-                          <td className="td-s">{row.description}</td>
+                          <td className="ucx-red">{row.id}</td>
+                          <td><span className="ucx-flag-badge">{row.type}</span></td>
+                          <td className="ucx-dim-txt">{row.description}</td>
                         </tr>
                       ))}
                       {flagsData.length === 0 && (
                         <tr>
-                          <td colSpan="3" className="td-s" style={{ padding: '24px', textAlign: 'center' }}>✅ No compliance or parsing flags identified.</td>
+                          <td colSpan="3"><div className="ucx-empty ucx-empty-good"><CheckCircle2 size={22} /><span>No compliance or parsing flags identified.</span></div></td>
                         </tr>
                       )}
                     </tbody>
