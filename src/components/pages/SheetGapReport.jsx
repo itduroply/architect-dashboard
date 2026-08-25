@@ -285,7 +285,7 @@ export default function SheetGapReport() {
   const [error, setError] = useState('');
   const [lastUpdated, setLastUpdated] = useState(null);
   const [lostLeadSheets, setLostLeadSheets] = useState(0);
-  const [reconciliation, setReconciliation] = useState({
+  const [, setReconciliation] = useState({
     approvedSheets: 0,
     ledgerSheets: 0,
     uncountedSheets: 0,
