@@ -13,7 +13,7 @@ const ArchitectAccounts = () => {
     eligibility: '',
     status: '',
     pencilOnly: false,
-    state: '',
+    branch: '',
   });
 
   // Operational state flags
@@ -120,7 +120,7 @@ const ArchitectAccounts = () => {
 
     // Imported names are sometimes fully joined in lowercase (for example, "Rajusharma").
     nameWithDetails = nameWithDetails.replace(
-      /\b([a-z]+?)(kalandre|pratab|yadav|kohli|singhai|charate|singhal|agarawal|agarwal|bansal|bhatt|chopra|gupta|jain|kapoor|khanna|maddela|mali|mehta|murthy|nawal|patel|rathore|reddy|sharma|singh|verma|kumar|powar)\b/ig,
+      /\b([a-z]+?)(prasad|kalandre|pratab|yadav|kohli|singhai|charate|singhal|agarawal|agarwal|bansal|bhatt|chopra|gupta|jain|kapoor|khanna|maddela|mali|mehta|murthy|nawal|patel|rathore|reddy|sharma|singh|verma|kumar|powar)\b/ig,
       '$1 $2'
     );
 
@@ -527,16 +527,37 @@ const ArchitectAccounts = () => {
   const fetchLedgerData = useCallback(async () => {
     setLoading(true);
     try {
-      const [ledgerRes, remittanceRes] = await Promise.all([
-        supabase.from('commission_ledger').select('*'),
+      // Supabase caps a single request at 1,000 rows. commission_ledger has
+      // crossed that, so a plain select silently drops every row past the
+      // first 1,000 - page through with .range() the same way the decorative
+      // product master is read above, or sheets past that row vanish from
+      // every architect's total.
+      const fetchAllLedgerRows = async () => {
+        let data = [];
+        const pageSize = 1000;
+        for (let from = 0; ; from += pageSize) {
+          const { data: pageData, error } = await supabase
+            .from('commission_ledger')
+            .select('*')
+            .order('claim_no')
+            .range(from, from + pageSize - 1);
+
+          if (error) throw error;
+          data = data.concat(pageData || []);
+          if (!pageData || pageData.length < pageSize) break;
+        }
+        return data;
+      };
+
+      const [ledgerData, remittanceRes] = await Promise.all([
+        fetchAllLedgerRows(),
         supabase.from('remittances').select('*')
       ]);
 
-      if (ledgerRes.error) throw ledgerRes.error;
       if (remittanceRes.error) throw remittanceRes.error;
-    
+
       const serverStatusMap = {};
-      ledgerRes.data?.forEach(row => {
+      ledgerData.forEach(row => {
         const name = row.architect_name || row.architectName || '';
         const archId = extractArchitectId(name);
         const currentStatus = row.status || row.eligibilityStatus;
@@ -554,7 +575,7 @@ const ArchitectAccounts = () => {
 
       // Conversion source rows are retained at zero only as an upload safeguard.
       // They must not appear anywhere in account/product UI summaries.
-      setRawLedgerData((ledgerRes.data || []).filter(row =>
+      setRawLedgerData(ledgerData.filter(row =>
         Number(row.total_eligible_sheets || row.totalSheets || 0) > 0
       ));
       setRawRemittanceData(remittanceRes.data || []);
@@ -586,6 +607,7 @@ const ArchitectAccounts = () => {
           architect_id: archId,
           architect_name: rawName, 
           state: row.state || 'Unknown',
+          branchSheetTotals: {},
           total_sheets: 0,
            raw_pool_payout: 0,
            credited_amount: 0,
@@ -596,6 +618,10 @@ const ArchitectAccounts = () => {
         };
       }
   
+      const branchName = String(row.branch_name || '').trim() || 'Unmapped Branch';
+      aggregationMap[archId].branchSheetTotals[branchName] =
+        (aggregationMap[archId].branchSheetTotals[branchName] || 0) + sheets;
+
       aggregationMap[archId].total_sheets += sheets;
        aggregationMap[archId].raw_pool_payout += payout;
        aggregationMap[archId].associatedNames.add(rawName);
@@ -630,6 +656,7 @@ const ArchitectAccounts = () => {
 
       return {
         ...record,
+        branches: Object.keys(record.branchSheetTotals).sort(),
         leadIds: Array.from(record.leadIds).sort(),
         architectMobiles: Array.from(record.architectMobiles).sort(),
         isEligible,
@@ -646,6 +673,12 @@ const ArchitectAccounts = () => {
   const handleFilterChange = (key, value) => {
     setFilters((prev) => ({ ...prev, [key]: value }));
   };
+
+  // With a branch selected, sheet counts show only the volume claimed through
+  // that branch. Payout, paid and balance stay at architect level, because
+  // remittances are recorded against the architect and not against a branch.
+  const getBranchSheets = (row) =>
+    filters.branch ? (row.branchSheetTotals?.[filters.branch] || 0) : (row.total_sheets || 0);
 
   const handleEligibilitySelect = async (rowItem, targetStatus) => {
     const operatorName = await resolveOperatorName();
@@ -747,6 +780,8 @@ const ArchitectAccounts = () => {
       const architect = selectedArchitectsById.get(architectId);
       const sheets = Number(ledgerRow.total_eligible_sheets || ledgerRow.totalSheets || 0);
       if (!architect || sheets === 0) return result;
+      const ledgerBranch = String(ledgerRow.branch_name || '').trim() || 'Unmapped Branch';
+      if (filters.branch && ledgerBranch !== filters.branch) return result;
 
       const sku = ledgerRow.product_sku || 'UNKNOWN';
       const key = `${architectId}__${sku}`;
@@ -754,7 +789,7 @@ const ArchitectAccounts = () => {
         result[key] = {
           'Architect Name': getArchitectDisplayName(architect.architect_name),
           'Account ID': architect.architect_id,
-          State: architect.state || 'Unknown',
+          Branch: ledgerBranch,
           Eligibility: architect.isEligible ? 'Eligible' : 'Ineligible',
           'Product Category': getProductCategory(sku),
           'Product SKU': sku,
@@ -784,10 +819,10 @@ const ArchitectAccounts = () => {
        'Account Number': architect.architect_id,
        'Mobile Number': architect.architectMobiles.join(', ') || '—',
        'Lead IDs': architect.leadIds.join(', ') || '—',
-       Sheets: Number(architect.total_sheets || 0),
+       Sheets: Number(getBranchSheets(architect)),
       'Pool Payout': Number(architect.actualPayoutAllowed || 0),
       Paid: Number(architect.credited_amount || 0),
-      State: architect.state || 'Unknown',
+      Branch: filters.branch || (architect.branches || []).join(', ') || 'Unmapped Branch',
       Balance: Number(architect.balance_due || 0),
       'Eligibility Status': architect.isEligible ? 'Eligible' : 'Ineligible',
       // Same category and SKU totals shown in the architect-name click modal.
@@ -880,16 +915,18 @@ const ArchitectAccounts = () => {
       (filters.status === 'cleared' && row.balance_due === 0);
 
     const matchesPencil = !filters.pencilOnly || row.hasNaturesSignature;
-    const matchesState = filters.state === '' || (row.state && row.state.toLowerCase() === filters.state.toLowerCase());
+    const matchesBranch =
+      filters.branch === '' ||
+      (row.branches || []).some((branch) => branch.toLowerCase() === filters.branch.toLowerCase());
 
-    return matchesSearch && matchesElig && matchesStatus && matchesPencil && matchesState;
+    return matchesSearch && matchesElig && matchesStatus && matchesPencil && matchesBranch;
   });
 
   const kpi = filteredArchitects.reduce((acc, row) => {
     acc.totalArchitects++;
     if (row.isEligible) {
       acc.eligible++;
-      acc.totalSheets += row.total_sheets || 0;
+      acc.totalSheets += getBranchSheets(row);
     } else {
       acc.notEligible++;
     }
@@ -908,7 +945,7 @@ const ArchitectAccounts = () => {
     totalSheets: 0,
   });
 
-  const uniqueStates = [...new Set(architectsList.map(item => item.state).filter(Boolean))];
+  const uniqueBranches = [...new Set(architectsList.flatMap(item => item.branches || []))].sort();
 
   // Delhi-based architects get the 10% Exception tab in the Convert modal;
   // every other state only sees 5%/7%.
@@ -1614,13 +1651,13 @@ const ArchitectAccounts = () => {
               <option value="ineligible">❌ Not Eligible</option>
             </select>
             <select
-              value={filters.state}
-              onChange={(e) => handleFilterChange('state', e.target.value)}
+              value={filters.branch}
+              onChange={(e) => handleFilterChange('branch', e.target.value)}
               style={{ padding: '8px', borderRadius: '6px', border: '1px solid #d1d5db', fontSize: '13px' }}
             >
-              <option value="">All States</option>
-              {uniqueStates.map((state, index) => (
-                <option key={index} value={state}>{state}</option>
+              <option value="">All Branches</option>
+              {uniqueBranches.map((branch, index) => (
+                <option key={index} value={branch}>{branch}</option>
               ))}
             </select>
             <select
@@ -1676,7 +1713,7 @@ const ArchitectAccounts = () => {
                   <th style={{ padding: '10px 12px', width: '7%', textAlign: 'right' }}>Sheets</th>
                   <th style={{ padding: '10px 12px', width: '10%', textAlign: 'right' }}>Pool Payout</th>
                   <th style={{ padding: '10px 12px', width: '9%', textAlign: 'right' }}>Paid</th>
-                  <th style={{ padding: '10px 12px', textAlign: 'left', width: '9%' }}>State</th>
+                  <th style={{ padding: '10px 12px', textAlign: 'left', width: '9%' }}>Branch</th>
                   <th style={{ padding: '10px 12px', width: '10%', textAlign: 'right' }}>Balance</th>
                   <th style={{ padding: '10px 12px', width: '12%', textAlign: 'center' }}>Eligibility Status</th>
                 </tr>
@@ -1740,7 +1777,7 @@ const ArchitectAccounts = () => {
                     {/* <td style={{ padding: '10px 12px', color: '#4b5563', fontSize: '12px', overflowWrap: 'anywhere' }} title={row.leadIds.join(', ')}>
                       {row.leadIds.join(', ') || '—'}
                     </td> */}
-                    <td style={{ padding: '10px 12px', textAlign: 'right', color: '#374151' }}>{row.total_sheets.toFixed(1)}</td>
+                    <td style={{ padding: '10px 12px', textAlign: 'right', color: '#374151' }}>{getBranchSheets(row).toFixed(1)}</td>
                     <td style={{ padding: '10px 12px', textAlign: 'right', fontWeight: 600, color: row.isEligible ? '#059669' : '#6b7280', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                       ₹{row.actualPayoutAllowed.toLocaleString('en-IN', { maximumFractionDigits: 0 })}
                     </td>
@@ -1748,8 +1785,8 @@ const ArchitectAccounts = () => {
                     <td style={{ padding: '10px 12px', textAlign: 'right', color: '#111827', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', fontWeight: 500 }}>
                       ₹{row.credited_amount.toLocaleString('en-IN', { maximumFractionDigits: 0 })}
                     </td>
-                    <td style={{ padding: '10px 12px', color: '#4b5563', fontSize: '13px' }}>
-                      {row.state}
+                    <td style={{ padding: '10px 12px', color: '#4b5563', fontSize: '13px', overflowWrap: 'anywhere' }} title={(row.branches || []).join(', ')}>
+                      {filters.branch || (row.branches || []).join(', ') || '—'}
                     </td>
                     <td style={{ 
                       padding: '10px 12px', textAlign: 'right', fontWeight: 600, color: row.balance_due > 0 ? '#b91c1c' : '#059669', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
