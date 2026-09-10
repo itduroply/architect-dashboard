@@ -1098,7 +1098,6 @@ const ArchitectAccounts = () => {
               ) : (
                 detailsModal.summaryData.map((lead) => {
                   const isExpanded = expandedLeadIds.has(lead.leadId);
-                  const locationLine = [lead.city, lead.district, lead.state, lead.pincode].filter(Boolean).join(', ');
                   const addressLine = [lead.address, lead.landmark].filter(Boolean).join(', ');
 
                   return (
