@@ -663,7 +663,7 @@ const runClaimProcessor = async () => {
 
     // 2. Fetch dataset tables
     const dbLeads = await fetchAllRecordsOptimized('leads_master', 'lead_id, linked_architect,state,lead_status,lead_created_by', 'lead_id');
-    const dbClaims = await fetchAllRecordsOptimized('dmi_claims', 'claim_no, lead_id, status, product_code, approved_qty,claim_date', 'claim_no');
+    const dbClaims = await fetchAllRecordsOptimized('dmi_claims', 'claim_no, lead_id, status, product_code, approved_qty,claim_date,distributor_name', 'claim_no');
     const dbArchitectMob = await fetchAllRecordsOptimized('architect_mob', 'arch_id, mobile_no', 'arch_id');
     const dbDgoInfo = await fetchAllRecordsOptimized('dgo_info', 'loginid, mobileno', 'loginid');
     // The ledger is transactional. Once a claim has been settled (or its Nature's
@@ -909,6 +909,10 @@ const runClaimProcessor = async () => {
       validMatches++;
       aggregatedTotalSheets += eligibleQty;
 
+      // The DMI claim file's "Distributor Name" column is the branch - carry
+      // it through so Architect Accounts' branch filter has something to show.
+      const branchName = claim.distributor_name ? claim.distributor_name.toString().trim() || null : null;
+
       calculatedOutputs.push({
         claim_no: claim.claim_no,
         lead_id: claimLeadId,
@@ -920,6 +924,7 @@ const runClaimProcessor = async () => {
         claim_date: safeClaimDate,
         state: leadState,
         lead_status: leadStatus,
+        branch: branchName,
         product: fileProductCode,
         qty: eligibleQty,
         rate: unitRatePrice,
@@ -959,6 +964,7 @@ const runClaimProcessor = async () => {
           state: row.state,
           lead_status: row.lead_status,
           claim_date: row.claim_date,
+          branch_name: row.branch,
           product_sku: row.product,
           total_eligible_sheets: row.qty,
           matrix_rate: row.rate, // Saves as 0 for Nature's Signature

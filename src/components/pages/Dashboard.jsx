@@ -26,6 +26,47 @@ import {
   FileSpreadsheet
 } from 'lucide-react';
 
+// Same extraction/name-cleanup rules as Architect Accounts, so an architect
+// groups under the same id/name on both pages.
+const extractArchitectId = (fullName) => {
+  if (!fullName) return 'UNKNOWN';
+  const str = String(fullName);
+  return str.includes('|') ? str.split('|')[0].trim() : str.trim();
+};
+
+const getArchitectDisplayName = (fullName) => {
+  if (!fullName) return 'Unmapped Architect';
+
+  let nameWithDetails = String(fullName).split('|').pop().trim();
+  nameWithDetails = nameWithDetails
+    .replace(/^(?:ar\.?|architect)\s+/i, '')
+    .replace(/\s*@\s*architect\b/ig, '')
+    .split(/\s+-\s+/)[0]
+    .trim();
+
+  const repeatedName = nameWithDetails.match(/^(.+?)\1$/i);
+  if (repeatedName) nameWithDetails = repeatedName[1].trim();
+
+  const onlyLetters = nameWithDetails.replace(/[^a-z]/ig, '');
+  if (onlyLetters.length > 1 && onlyLetters === onlyLetters.toUpperCase()) {
+    nameWithDetails = nameWithDetails.toLowerCase().replace(/(^|[\s.])([a-z])/g, (_, prefix, letter) => `${prefix}${letter.toUpperCase()}`);
+  }
+
+  nameWithDetails = nameWithDetails.replace(
+    /\b([a-z]+?)(prasad|kalandre|pratab|yadav|kohli|singhai|charate|singhal|agarawal|agarwal|bansal|bhatt|chopra|gupta|jain|kapoor|khanna|maddela|mali|mehta|murthy|nawal|patel|rathore|reddy|sharma|singh|verma|kumar|powar)\b/ig,
+    '$1 $2'
+  );
+
+  return nameWithDetails
+    .replace(/([a-z])([A-Z])/g, '$1 $2')
+    .replace(/([A-Z])([A-Z][a-z])/g, '$1 $2')
+    .replace(/\.(?=[A-Za-z])/g, '. ')
+    .replace(/\s+/g, ' ')
+    .toLowerCase()
+    .replace(/(^|[\s.])([a-z])/g, (_, prefix, letter) => `${prefix}${letter.toUpperCase()}`)
+    .trim() || 'Unmapped Architect';
+};
+
 export default function DashboardPage() {
   const [loading, setLoading] = useState(true);
   const [architectsList, setArchitectsList] = useState([]);
@@ -46,50 +87,63 @@ export default function DashboardPage() {
   const syncDashboardMetrics = useCallback(async () => {
     setLoading(true);
     try {
-      const { data: ledger, error } = await supabase
-        .from('commission_ledger')
-        .select('*');
+      // Supabase caps a single request at 1,000 rows. commission_ledger has
+      // crossed that (same fix as Architect Accounts) - a plain select silently
+      // drops every row past the first 1,000, which is why this page's totals
+      // used to drift from Architect Accounts.
+      let ledger = [];
+      const pageSize = 1000;
+      for (let from = 0; ; from += pageSize) {
+        const { data: pageData, error } = await supabase
+          .from('commission_ledger')
+          .select('*')
+          .order('claim_no')
+          .range(from, from + pageSize - 1);
 
-      if (error) throw error;
+        if (error) throw error;
+        ledger = ledger.concat(pageData || []);
+        if (!pageData || pageData.length < pageSize) break;
+      }
 
-      const dataRows = ledger || [];
+      // Conversion source rows are retained at zero only as an upload
+      // safeguard and must not appear in any account/product summary - same
+      // filter Architect Accounts applies before aggregating.
+      const dataRows = ledger.filter(row =>
+        Number(row.total_eligible_sheets || row.totalSheets || row.sheets || 0) > 0
+      );
       const aggregationMap = {};
-      
+
+      // Manual eligibility overrides set from Architect Accounts are cached
+      // here under the same key, so a status change made there is reflected
+      // here too without needing its own round trip.
+      let eligibilityOverrides = {};
+      try {
+        const saved = localStorage.getItem('architect_eligibility_registry_v2');
+        eligibilityOverrides = saved ? JSON.parse(saved) : {};
+      } catch {
+        eligibilityOverrides = {};
+      }
+
       const categoryPayoutMap = { PW: 0, BB: 0, FD: 0, Decorative: 0 };
       const skuPayoutMap = {};
-      const skuSheetsMap = {}; 
-      const skuPayoutSumMap = {}; 
-      
+      const skuSheetsMap = {};
+      const skuPayoutSumMap = {};
+
       // Pass 1: Parse name fields, isolate the Architect ID prefix, and group arrays
       dataRows.forEach((row) => {
         if (!row) return;
 
         const rawNameField = String(row.architect_name || row.architectName || '').trim();
-        
-        let extractedId = '';
-        let extractedName = 'Unmapped Architect';
-        
-        // Safely extract the target numeric ID prefix
-        if (rawNameField.includes('|')) {
-          const parts = rawNameField.split('|');
-          extractedId = parts[0].trim();
-          extractedName = parts[1].trim();
-        } else {
-          const idMatch = rawNameField.match(/^(\d+)/);
-          if (idMatch) {
-            extractedId = idMatch[1];
-            extractedName = rawNameField.replace(extractedId, '').replace(/^[\s\-_|]+/, '').trim() || rawNameField;
-          } else {
-            extractedName = rawNameField || 'Unmapped Architect';
-          }
-        }
+        const extractedId = extractArchitectId(rawNameField);
+        const extractedName = getArchitectDisplayName(rawNameField);
 
-        // Group rows using the extracted Architect ID
-        const uniqueKey = extractedId ? `id_${extractedId}` : `name_${extractedName}`;
-        
+        // Group rows using the same key Architect Accounts uses, so a manual
+        // eligibility override made there applies to the same architect here.
+        const uniqueKey = extractedId;
+
         const sheets = parseFloat(row.total_eligible_sheets || row.totalSheets || row.sheets || 0);
         const payout = parseFloat(row.total_payout_amount || row.payoutAmount || row.amount || 0);
-        const isRowIneligible = String(row.status || row.eligibilityStatus || '').toLowerCase() === 'ineligible';
+        const rowStatus = String(row.status || row.eligibilityStatus || '').toLowerCase();
         const rawProductSku = String(row.product_sku || row.product_code || row.item_code || '').trim();
 
         if (!aggregationMap[uniqueKey]) {
@@ -98,18 +152,16 @@ export default function DashboardPage() {
             architect_name: extractedName,
             total_sheets: 0,
             raw_commission: 0,
-            ineligibleRowsCount: 0,
-            totalRows: 0,
+            latestRowStatus: '',
             skuBreakdown: []
           };
         }
-        
+
         // Accumulate running values into the grouped object
         aggregationMap[uniqueKey].total_sheets += sheets;
         aggregationMap[uniqueKey].raw_commission += payout;
-        aggregationMap[uniqueKey].totalRows += 1;
-        if (isRowIneligible) {
-          aggregationMap[uniqueKey].ineligibleRowsCount += 1;
+        if (rowStatus) {
+          aggregationMap[uniqueKey].latestRowStatus = rowStatus;
         }
 
         aggregationMap[uniqueKey].skuBreakdown.push({ rawProductSku, payout, sheets });
@@ -117,8 +169,12 @@ export default function DashboardPage() {
 
       // Pass 2: Verify eligibility rules and map data components
       const compiledArchitects = Object.values(aggregationMap).map(arch => {
-        const isEligible = arch.ineligibleRowsCount < arch.totalRows;
-        
+        // Same default as Architect Accounts: eligible unless explicitly
+        // marked ineligible (on the ledger row itself or via the shared
+        // localStorage override).
+        const overrideStatus = eligibilityOverrides[arch.architect_id];
+        const isEligible = (overrideStatus || arch.latestRowStatus) !== 'ineligible';
+
         const finalCommission = isEligible ? arch.raw_commission : 0;
         const finalSheets = isEligible ? arch.total_sheets : 0;
 
