@@ -69,6 +69,7 @@ export default function Sidebar() {
     if (p.includes('/dashboard')) return 'dashboard';
     if (p.includes('/users')) return 'users';
     if (p.includes('/master')) return 'master';
+    if (p.includes('/payment-history')) return 'payment-history';
     if (p.includes('/history')) return 'history';
     if (p.includes('/accounts')) return 'accounts';
     if (p.includes('/remittance')) return 'remittance';
@@ -99,6 +100,7 @@ export default function Sidebar() {
       master: '/app/master',
       payout: '/app/payout',
       commission: '/app/commission',
+      'payment-history': '/app/payment-history',
       full: '/app/full',
       query: '/app/query',
       peligible: '/app/peligible',
@@ -140,7 +142,7 @@ export default function Sidebar() {
   const showQuerySection = hasAccess('query');
   const showEligibilitySection = hasAccess('peligible');
   const showVenturaSection = hasAccess('ventura');
-  const showAccountsSection = hasAccess('accounts') || hasAccess('pan-architect') || hasAccess('payout') || hasAccess('remittance') || hasAccess('claims') || hasAccess('commission') || hasAccess('sheet-gap');
+  const showAccountsSection = hasAccess('accounts') || hasAccess('pan-architect') || hasAccess('payout') || hasAccess('remittance') || hasAccess('claims') || hasAccess('commission') || hasAccess('sheet-gap') || hasAccess('payment-history');
 
   return (
     <nav id="sidebar" style={{ display: 'flex', flexDirection: 'column', height: '100vh', overflow: 'hidden' }}>
@@ -333,6 +335,16 @@ export default function Sidebar() {
                 onClick={() => handleNavigation('commission')}
               >
                 <span className="sb-icon">🪙</span> Qualified Architect Split
+              </div>
+            )}
+
+            {hasAccess('payment-history') && (
+              <div
+                className={getNavItemClass('payment-history')}
+                id="nav-payment-history"
+                onClick={() => handleNavigation('payment-history')}
+              >
+                <span className="sb-icon">🧾</span> Payment History
               </div>
             )}
           </>

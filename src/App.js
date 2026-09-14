@@ -21,6 +21,7 @@ import RemittanceEntry from './components/pages/RemittanceEntry';
 import MyProfile from './components/pages/MyProfile';
 import UploadCalculate from './components/pages/UploadCalculate';
 import SheetGapReport from './components/pages/SheetGapReport';
+import PaymentHistory from './components/pages/PaymentHistory';
 
 /* ✅ PROTECTED LAYOUT CONTAINER */
 function ProtectedLayout({ session }) {
@@ -104,6 +105,7 @@ export default function App() {
           <Route path="pan-architect" element={<PanArchitect />} />
           <Route path="payout" element={<Payout />} />
           <Route path="commission" element={<CommissionLedger />} />
+          <Route path="payment-history" element={<PaymentHistory />} />
           <Route path="full" element={<Full />} />
           <Route path="query" element={<Query />} />
           <Route path="peligible" element={<ProductEligibility />} /> {/* Add the ProductEligibilityPage route */}

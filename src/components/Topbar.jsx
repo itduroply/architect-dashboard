@@ -29,10 +29,12 @@ export default function Topbar() {
     if (p.includes('/dashboard')) return 'Dashboard';
     if (p.includes('/users')) return 'User Management';
     if (p.includes('/master')) return 'Master Config';
+    if (p.includes('/payment-history')) return 'Payment History';
     if (p.includes('/history')) return 'Upload History';
     if (p.includes('/accounts')) return 'Architect Accounts';
     if (p.includes('/remittance')) return 'Remittance Entry';
     if (p.includes('/claims')) return 'Claim Processor';
+    if (p.includes('/payout')) return 'Payout Request';
     if (p.includes('/profile')) return 'My Profile';
     return 'Dashboard';
   })();
