@@ -578,6 +578,7 @@ export default function PaymentHistory() {
   }, [rows, search, stageFilter, monthFilter, dateBasis, leadsFor]);
 
   /* ── Headline numbers, scoped to the active filters ───── */
+  // eslint-disable-next-line no-unused-vars
   const totals = useMemo(() => {
     const summary = {
       claimedCount: filteredRows.length,
@@ -1032,6 +1033,7 @@ export default function PaymentHistory() {
     XLSX.writeFile(workbook, `Statement_${selectedArchitect.accountId}_${new Date().toISOString().slice(0, 10)}.xlsx`);
   };
 
+  // eslint-disable-next-line no-unused-vars
   const handleExport = () => {
     if (filteredRows.length === 0) return;
 
