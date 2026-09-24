@@ -674,7 +674,7 @@ const ArchitectAccounts = () => {
         (aggregationMap[archId].branchSheetTotals[branchName] || 0) + sheets;
       // Kept so the branch and claim-date filters can re-sum sheets for a
       // narrower slice without re-fetching from Supabase.
-      aggregationMap[archId].ledgerRows.push({ branch: branchName, claimDate: row.claim_date, sheets });
+      aggregationMap[archId].ledgerRows.push({ branch: branchName, claimDate: row.claim_date, sheets, payout });
 
       aggregationMap[archId].total_sheets += sheets;
        aggregationMap[archId].raw_pool_payout += payout;
@@ -728,14 +728,15 @@ const ArchitectAccounts = () => {
     setFilters((prev) => ({ ...prev, [key]: value }));
   };
 
-  // With a branch and/or claim-date range selected, sheet counts show only the
-  // volume claimed through that branch / within that window. Payout, paid and
-  // balance stay at architect level (lifetime), because remittances are
-  // recorded against the architect as a whole, not against a branch or date.
-  const getBranchSheets = (row) => {
+  // With a branch and/or claim-date range selected, sheet counts and pool
+  // payout show only the volume claimed through that branch / within that
+  // window. Paid and balance stay at architect level (lifetime), because
+  // remittances are recorded against the architect as a whole, not against a
+  // branch or date.
+  const sumLedgerSlice = (row, field) => {
     const hasBranchFilter = Boolean(filters.branch);
     const hasDateFilter = Boolean(filters.startDate || filters.endDate);
-    if (!hasBranchFilter && !hasDateFilter) return row.total_sheets || 0;
+    if (!hasBranchFilter && !hasDateFilter) return null;
 
     const start = filters.startDate ? toLocalDate(filters.startDate) : null;
     const end = filters.endDate ? toLocalDate(filters.endDate) : null;
@@ -748,8 +749,19 @@ const ArchitectAccounts = () => {
         if (start && claimDate < start) return sum;
         if (end && claimDate > end) return sum;
       }
-      return sum + entry.sheets;
+      return sum + (entry[field] || 0);
     }, 0);
+  };
+
+  const getBranchSheets = (row) => {
+    const sliced = sumLedgerSlice(row, 'sheets');
+    return sliced === null ? (row.total_sheets || 0) : sliced;
+  };
+
+  const getBranchPayout = (row) => {
+    if (!row.isEligible) return 0;
+    const sliced = sumLedgerSlice(row, 'payout');
+    return sliced === null ? (row.actualPayoutAllowed || 0) : sliced;
   };
 
   const handleEligibilitySelect = async (rowItem, targetStatus) => {
@@ -898,7 +910,7 @@ const ArchitectAccounts = () => {
        'Mobile Number': architect.architectMobiles.join(', ') || '—',
        'Lead IDs': architect.leadIds.join(', ') || '—',
        Sheets: Number(getBranchSheets(architect)),
-      'Pool Payout': Number(architect.actualPayoutAllowed || 0),
+      'Pool Payout': Number(getBranchPayout(architect)),
       Paid: Number(architect.credited_amount || 0),
       Branch: filters.branch || (architect.branches || []).join(', ') || 'Unmapped Branch',
       Balance: Number(architect.balance_due || 0),
@@ -1009,7 +1021,7 @@ const ArchitectAccounts = () => {
       acc.notEligible++;
     }
     
-    acc.commissionPool += row.actualPayoutAllowed || 0;
+    acc.commissionPool += getBranchPayout(row);
     acc.totalCredited += row.credited_amount || 0;
     acc.balanceDue += row.balance_due || 0;
     return acc;
@@ -1870,7 +1882,11 @@ const ArchitectAccounts = () => {
                       <div style={{ fontSize: '9px', fontWeight: 500, color: '#2563eb', textTransform: 'none' }}>in period</div>
                     )}
                   </th>
-                  <th style={{ padding: '10px 12px', width: '10%', textAlign: 'right' }}>Pool Payout</th>
+                  <th style={{ padding: '10px 12px', width: '10%', textAlign: 'right' }}>
+                    Pool Payout{(filters.startDate || filters.endDate) && (
+                      <div style={{ fontSize: '9px', fontWeight: 500, color: '#2563eb', textTransform: 'none' }}>in period</div>
+                    )}
+                  </th>
                   <th style={{ padding: '10px 12px', width: '9%', textAlign: 'right' }}>Paid</th>
                   <th style={{ padding: '10px 12px', textAlign: 'left', width: '9%' }}>Branch</th>
                   <th style={{ padding: '10px 12px', width: '10%', textAlign: 'right' }}>Balance</th>
@@ -1938,7 +1954,7 @@ const ArchitectAccounts = () => {
                     </td> */}
                     <td style={{ padding: '10px 12px', textAlign: 'right', color: '#374151' }}>{getBranchSheets(row).toFixed(1)}</td>
                     <td style={{ padding: '10px 12px', textAlign: 'right', fontWeight: 600, color: row.isEligible ? '#059669' : '#6b7280', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                      ₹{row.actualPayoutAllowed.toLocaleString('en-IN', { maximumFractionDigits: 0 })}
+                      ₹{getBranchPayout(row).toLocaleString('en-IN', { maximumFractionDigits: 0 })}
                     </td>
                     
                     <td style={{ padding: '10px 12px', textAlign: 'right', color: '#111827', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', fontWeight: 500 }}>
