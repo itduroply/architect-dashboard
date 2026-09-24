@@ -235,6 +235,8 @@ export default function PaymentHistory() {
   const [stageFilter, setStageFilter] = useState('All');
   const [monthFilter, setMonthFilter] = useState('');
   const [dateBasis, setDateBasis] = useState('claim'); // 'claim' | 'payment'
+  const [startDate, setStartDate] = useState('');
+  const [endDate, setEndDate] = useState('');
   const [currentPage, setCurrentPage] = useState(1);
   const [expandedKey, setExpandedKey] = useState(null);
 
@@ -248,7 +250,7 @@ export default function PaymentHistory() {
   // Month-wise pool view
   const [poolMonth, setPoolMonth] = useState('');
   const [poolQuarter, setPoolQuarter] = useState('');
-  const [periodType, setPeriodType] = useState('all'); // 'all' | 'month' | 'quarter'
+  const [periodType, setPeriodType] = useState('all'); // 'all' | 'month' | 'quarter' | 'custom'
   const [monthSearch, setMonthSearch] = useState('');
   const [expandedMonthArchitect, setExpandedMonthArchitect] = useState(null);
 
@@ -472,7 +474,7 @@ export default function PaymentHistory() {
   useEffect(() => {
     setCurrentPage(1);
     setExpandedKey(null);
-  }, [search, stageFilter, monthFilter, dateBasis]);
+  }, [search, stageFilter, monthFilter, dateBasis, startDate, endDate]);
 
   const leadsFor = useCallback(
     (accountId) => accountIndex[accountId]?.leadIds || [],
@@ -554,9 +556,17 @@ export default function PaymentHistory() {
         return false;
       }
 
+      const basisValue = dateBasis === 'payment' ? row.paidDate : row.claimDate;
+
       if (monthFilter) {
-        const basisValue = dateBasis === 'payment' ? row.paidDate : row.claimDate;
         if (monthKeyOf(basisValue) !== monthFilter) return false;
+      }
+
+      if (startDate || endDate) {
+        const basisDate = toLocalDate(basisValue);
+        if (!basisDate) return false;
+        if (startDate && basisDate < toLocalDate(startDate)) return false;
+        if (endDate && basisDate > toLocalDate(endDate)) return false;
       }
 
       if (!needle) return true;
@@ -575,7 +585,7 @@ export default function PaymentHistory() {
 
       return haystack.includes(needle);
     });
-  }, [rows, search, stageFilter, monthFilter, dateBasis, leadsFor]);
+  }, [rows, search, stageFilter, monthFilter, dateBasis, startDate, endDate, leadsFor]);
 
   /* ── Headline numbers, scoped to the active filters ───── */
   // eslint-disable-next-line no-unused-vars
@@ -636,6 +646,8 @@ export default function PaymentHistory() {
     setStageFilter('All');
     setMonthFilter('');
     setDateBasis('claim');
+    setStartDate('');
+    setEndDate('');
   };
 
   /* ── Architect directory ──────────────────────────────── */
@@ -882,8 +894,103 @@ export default function PaymentHistory() {
     return Array.from(keys).sort().reverse();
   }, [monthlyPool]);
 
-  // One selection drives the view: everything, a single month, or a quarter.
+  // A custom day-level range, built straight off each architect's credits so
+  // it can cut across month boundaries (e.g. 1 Sep to 18 Sep), which the
+  // month/quarter buckets above cannot represent.
+  const customRangePool = useMemo(() => {
+    if (!startDate && !endDate) return null;
+    const start = startDate ? toLocalDate(startDate) : null;
+    const end = endDate ? toLocalDate(endDate) : null;
+
+    const leadIds = new Set();
+    const architects = {};
+    let payout = 0;
+    let sheets = 0;
+    let claimCount = 0;
+
+    Object.keys(accountIndex).forEach((accountId) => {
+      const entry = accountIndex[accountId];
+      (entry.credits || []).forEach((credit) => {
+        const date = toLocalDate(credit.date);
+        if (!date) return;
+        if (start && date < start) return;
+        if (end && date > end) return;
+
+        payout += credit.amount;
+        sheets += credit.sheets;
+        claimCount += credit.claimNos.length;
+        if (credit.leadId) leadIds.add(credit.leadId);
+
+        if (!architects[accountId]) {
+          architects[accountId] = {
+            accountId,
+            name: entry.displayName || 'Unmapped Architect',
+            branches: entry.branches || [],
+            state: entry.state || '',
+            payout: 0,
+            sheets: 0,
+            claimCount: 0,
+            leads: {}
+          };
+        }
+        const architect = architects[accountId];
+        architect.payout += credit.amount;
+        architect.sheets += credit.sheets;
+        architect.claimCount += credit.claimNos.length;
+
+        const leadKey = credit.leadId || 'UNMAPPED';
+        if (!architect.leads[leadKey]) {
+          architect.leads[leadKey] = {
+            leadId: credit.leadId || '',
+            siteNo: credit.siteNo,
+            payout: 0,
+            sheets: 0,
+            claimCount: 0,
+            dates: []
+          };
+        }
+        const lead = architect.leads[leadKey];
+        lead.payout += credit.amount;
+        lead.sheets += credit.sheets;
+        lead.claimCount += credit.claimNos.length;
+        lead.dates.push(credit.date);
+      });
+    });
+
+    return {
+      payout,
+      sheets,
+      claimCount,
+      leadCount: leadIds.size,
+      architects: Object.values(architects)
+        .map((architect) => ({
+          ...architect,
+          leadCount: Object.keys(architect.leads).length,
+          leads: Object.values(architect.leads)
+            .map((lead) => ({ ...lead, dates: lead.dates.sort() }))
+            .sort((a, b) => b.payout - a.payout)
+        }))
+        .sort((a, b) => b.payout - a.payout || a.name.localeCompare(b.name))
+    };
+  }, [accountIndex, startDate, endDate]);
+
+  // One selection drives the view: everything, a single month, a quarter, or
+  // a custom start/end date range.
   const activeMonth = useMemo(() => {
+    if (periodType === 'custom') {
+      if (!customRangePool) return null;
+      const label = startDate && endDate
+        ? `${formatDate(startDate)} – ${formatDate(endDate)}`
+        : startDate ? `From ${formatDate(startDate)}` : `Until ${formatDate(endDate)}`;
+      return {
+        monthKey: 'custom',
+        label,
+        isQuarter: false,
+        isAll: false,
+        ...customRangePool
+      };
+    }
+
     if (periodType === 'all') {
       if (monthlyPool.length === 0) return null;
       return {
@@ -923,7 +1030,7 @@ export default function PaymentHistory() {
       leadCount: found?.leadCount || 0,
       architects: found?.architects || []
     };
-  }, [monthlyPool, poolMonth, poolQuarter, periodType, quarterOptions]);
+  }, [monthlyPool, poolMonth, poolQuarter, periodType, quarterOptions, customRangePool, startDate, endDate]);
 
   const monthArchitects = useMemo(() => {
     if (!activeMonth) return [];
@@ -1304,6 +1411,55 @@ export default function PaymentHistory() {
           color: #2a1a0f;
           cursor: pointer;
         }
+
+        .ph-date-range {
+          display: flex;
+          align-items: center;
+          gap: 0.55rem;
+          border: 1px solid #eaddcc;
+          background: #fdfaf5;
+          border-radius: 10px;
+          padding: 0.38rem 0.7rem;
+          transition: all 0.18s ease-in-out;
+        }
+        .ph-date-range:hover { border-color: #d8c5a5; background: #fbf4e8; }
+        .ph-date-range.active { border-color: #c9a25a; background: #fbf4e8; box-shadow: 0 0 0 2px rgba(201, 162, 90, 0.13); }
+        .ph-date-field { display: flex; flex-direction: column; gap: 0.08rem; line-height: 1; }
+        .ph-date-field label {
+          font-size: 0.56rem;
+          font-weight: 700;
+          text-transform: uppercase;
+          letter-spacing: 0.06em;
+          color: #b8956c;
+        }
+        .ph-date-field input[type="date"] {
+          border: none;
+          outline: none;
+          background: transparent;
+          font-family: inherit;
+          font-size: 0.79rem;
+          font-weight: 700;
+          color: #2a1a0f;
+          padding: 0;
+          cursor: pointer;
+        }
+        .ph-date-sep { width: 1px; height: 22px; background: #eaddcc; }
+        .ph-date-clear {
+          border: none;
+          background: #f2ebd9;
+          color: #8c7662;
+          width: 18px;
+          height: 18px;
+          border-radius: 50%;
+          cursor: pointer;
+          font-size: 0.7rem;
+          line-height: 1;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          flex-shrink: 0;
+        }
+        .ph-date-clear:hover { background: #e7d9c2; color: #5c4632; }
 
         .chip {
           display: inline-flex;
@@ -1826,6 +1982,8 @@ export default function PaymentHistory() {
                     onChange={(e) => {
                       setPeriodType(e.target.value ? 'month' : 'all');
                       setPoolMonth(e.target.value);
+                      setStartDate('');
+                      setEndDate('');
                       setExpandedMonthArchitect(null);
                       setMonthSearch('');
                     }}
@@ -1844,6 +2002,8 @@ export default function PaymentHistory() {
                     onChange={(e) => {
                       setPeriodType(e.target.value ? 'quarter' : 'all');
                       setPoolQuarter(e.target.value);
+                      setStartDate('');
+                      setEndDate('');
                       setExpandedMonthArchitect(null);
                       setMonthSearch('');
                     }}
@@ -1853,6 +2013,51 @@ export default function PaymentHistory() {
                       <option key={key} value={key}>{quarterLabelOf(key)}</option>
                     ))}
                   </select>
+                </div>
+
+                <div className={`ph-date-range ${periodType === 'custom' ? 'active' : ''}`}>
+                  <Calendar size={13} color="#a68b72" />
+                  <div className="ph-date-field">
+                    <label>From</label>
+                    <input
+                      type="date"
+                      value={startDate}
+                      onChange={(e) => {
+                        setStartDate(e.target.value);
+                        setPeriodType(e.target.value || endDate ? 'custom' : 'all');
+                        setPoolMonth('');
+                        setPoolQuarter('');
+                        setExpandedMonthArchitect(null);
+                        setMonthSearch('');
+                      }}
+                    />
+                  </div>
+                  <div className="ph-date-sep" />
+                  <div className="ph-date-field">
+                    <label>To</label>
+                    <input
+                      type="date"
+                      value={endDate}
+                      onChange={(e) => {
+                        setEndDate(e.target.value);
+                        setPeriodType(e.target.value || startDate ? 'custom' : 'all');
+                        setPoolMonth('');
+                        setPoolQuarter('');
+                        setExpandedMonthArchitect(null);
+                        setMonthSearch('');
+                      }}
+                    />
+                  </div>
+                  {periodType === 'custom' && (
+                    <button
+                      type="button"
+                      className="ph-date-clear"
+                      onClick={() => { setStartDate(''); setEndDate(''); setPeriodType('all'); }}
+                      title="Clear date range"
+                    >
+                      ×
+                    </button>
+                  )}
                 </div>
 
                 <span className="mw-count">
@@ -2284,12 +2489,55 @@ export default function PaymentHistory() {
 
           <div className="select-shell">
             <Calendar size={14} color="#a68b72" />
-            <select value={monthFilter} onChange={(e) => setMonthFilter(e.target.value)}>
+            <select
+              value={monthFilter}
+              onChange={(e) => {
+                setMonthFilter(e.target.value);
+                if (e.target.value) { setStartDate(''); setEndDate(''); }
+              }}
+            >
               <option value="">All months</option>
               {monthOptions.map((key) => (
                 <option key={key} value={key}>{monthLabelOf(key)}</option>
               ))}
             </select>
+          </div>
+
+          <div className={`ph-date-range ${(startDate || endDate) ? 'active' : ''}`}>
+            <Calendar size={14} color="#a68b72" />
+            <div className="ph-date-field">
+              <label>From</label>
+              <input
+                type="date"
+                value={startDate}
+                onChange={(e) => {
+                  setStartDate(e.target.value);
+                  if (e.target.value) setMonthFilter('');
+                }}
+              />
+            </div>
+            <div className="ph-date-sep" />
+            <div className="ph-date-field">
+              <label>To</label>
+              <input
+                type="date"
+                value={endDate}
+                onChange={(e) => {
+                  setEndDate(e.target.value);
+                  if (e.target.value) setMonthFilter('');
+                }}
+              />
+            </div>
+            {(startDate || endDate) && (
+              <button
+                type="button"
+                className="ph-date-clear"
+                onClick={() => { setStartDate(''); setEndDate(''); }}
+                title="Clear date range"
+              >
+                ×
+              </button>
+            )}
           </div>
 
           <div className="select-shell">

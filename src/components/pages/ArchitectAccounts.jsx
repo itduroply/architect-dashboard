@@ -1,7 +1,22 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useLocation } from 'react-router-dom';
-import { supabase } from '../../lib/supbase'; 
+import { supabase } from '../../lib/supbase';
 import * as XLSX from 'xlsx';
+import { Calendar } from 'lucide-react';
+
+// commission_ledger dates arrive as either a plain date ("2026-07-21") or a
+// timestamptz. Plain dates are parsed as local so they never slide back a day.
+const toLocalDate = (value) => {
+  if (!value) return null;
+  const str = String(value);
+  if (str.includes('T')) {
+    const parsed = new Date(str);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  }
+  const [y, m, d] = str.split('-').map(Number);
+  if (!y || !m || !d) return null;
+  return new Date(y, m - 1, d);
+};
 
 const ArchitectAccounts = () => {
   const location = useLocation();
@@ -9,11 +24,13 @@ const ArchitectAccounts = () => {
   // Filters state management
   const [filters, setFilters] = useState({
     search: '',
-    tier: '', 
+    tier: '',
     eligibility: '',
     status: '',
     pencilOnly: false,
     branch: '',
+    startDate: '',
+    endDate: '',
   });
 
   // Operational state flags
@@ -638,9 +655,10 @@ const ArchitectAccounts = () => {
          aggregationMap[archId] = {
           uniqueKey: archId,
           architect_id: archId,
-          architect_name: rawName, 
+          architect_name: rawName,
           state: row.state || 'Unknown',
           branchSheetTotals: {},
+          ledgerRows: [],
           total_sheets: 0,
            raw_pool_payout: 0,
            credited_amount: 0,
@@ -650,10 +668,13 @@ const ArchitectAccounts = () => {
            architectMobiles: new Set(),
         };
       }
-  
+
       const branchName = String(row.branch_name || '').trim() || 'Unmapped Branch';
       aggregationMap[archId].branchSheetTotals[branchName] =
         (aggregationMap[archId].branchSheetTotals[branchName] || 0) + sheets;
+      // Kept so the branch and claim-date filters can re-sum sheets for a
+      // narrower slice without re-fetching from Supabase.
+      aggregationMap[archId].ledgerRows.push({ branch: branchName, claimDate: row.claim_date, sheets });
 
       aggregationMap[archId].total_sheets += sheets;
        aggregationMap[archId].raw_pool_payout += payout;
@@ -707,11 +728,29 @@ const ArchitectAccounts = () => {
     setFilters((prev) => ({ ...prev, [key]: value }));
   };
 
-  // With a branch selected, sheet counts show only the volume claimed through
-  // that branch. Payout, paid and balance stay at architect level, because
-  // remittances are recorded against the architect and not against a branch.
-  const getBranchSheets = (row) =>
-    filters.branch ? (row.branchSheetTotals?.[filters.branch] || 0) : (row.total_sheets || 0);
+  // With a branch and/or claim-date range selected, sheet counts show only the
+  // volume claimed through that branch / within that window. Payout, paid and
+  // balance stay at architect level (lifetime), because remittances are
+  // recorded against the architect as a whole, not against a branch or date.
+  const getBranchSheets = (row) => {
+    const hasBranchFilter = Boolean(filters.branch);
+    const hasDateFilter = Boolean(filters.startDate || filters.endDate);
+    if (!hasBranchFilter && !hasDateFilter) return row.total_sheets || 0;
+
+    const start = filters.startDate ? toLocalDate(filters.startDate) : null;
+    const end = filters.endDate ? toLocalDate(filters.endDate) : null;
+
+    return (row.ledgerRows || []).reduce((sum, entry) => {
+      if (hasBranchFilter && entry.branch !== filters.branch) return sum;
+      if (hasDateFilter) {
+        const claimDate = toLocalDate(entry.claimDate);
+        if (!claimDate) return sum;
+        if (start && claimDate < start) return sum;
+        if (end && claimDate > end) return sum;
+      }
+      return sum + entry.sheets;
+    }, 0);
+  };
 
   const handleEligibilitySelect = async (rowItem, targetStatus) => {
     const operatorName = await resolveOperatorName();
@@ -815,6 +854,12 @@ const ArchitectAccounts = () => {
       if (!architect || sheets === 0) return result;
       const ledgerBranch = String(ledgerRow.branch_name || '').trim() || 'Unmapped Branch';
       if (filters.branch && ledgerBranch !== filters.branch) return result;
+      if (filters.startDate || filters.endDate) {
+        const claimDate = toLocalDate(ledgerRow.claim_date);
+        if (!claimDate) return result;
+        if (filters.startDate && claimDate < toLocalDate(filters.startDate)) return result;
+        if (filters.endDate && claimDate > toLocalDate(filters.endDate)) return result;
+      }
 
       const sku = ledgerRow.product_sku || 'UNKNOWN';
       const key = `${architectId}__${sku}`;
@@ -1731,6 +1776,45 @@ const ArchitectAccounts = () => {
                 <option key={index} value={branch}>{branch}</option>
               ))}
             </select>
+
+            <div style={{
+              display: 'flex', alignItems: 'center', gap: '8px',
+              border: `1px solid ${(filters.startDate || filters.endDate) ? '#93c5fd' : '#d1d5db'}`,
+              background: (filters.startDate || filters.endDate) ? '#eff6ff' : '#fff',
+              borderRadius: '6px', padding: '5px 10px', transition: 'all 0.2s ease'
+            }}>
+              <Calendar size={13} color={(filters.startDate || filters.endDate) ? '#2563eb' : '#6b7280'} />
+              <div style={{ display: 'flex', flexDirection: 'column', lineHeight: 1, gap: '1px' }}>
+                <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '.04em', textTransform: 'uppercase', color: '#94a3b8' }}>From</span>
+                <input
+                  type="date"
+                  value={filters.startDate}
+                  onChange={(e) => handleFilterChange('startDate', e.target.value)}
+                  style={{ border: 'none', outline: 'none', background: 'transparent', fontSize: '12px', fontWeight: 600, color: '#1e293b', fontFamily: 'inherit', cursor: 'pointer', padding: 0 }}
+                />
+              </div>
+              <div style={{ width: '1px', height: '20px', background: '#e2e8f0' }} />
+              <div style={{ display: 'flex', flexDirection: 'column', lineHeight: 1, gap: '1px' }}>
+                <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '.04em', textTransform: 'uppercase', color: '#94a3b8' }}>To</span>
+                <input
+                  type="date"
+                  value={filters.endDate}
+                  onChange={(e) => handleFilterChange('endDate', e.target.value)}
+                  style={{ border: 'none', outline: 'none', background: 'transparent', fontSize: '12px', fontWeight: 600, color: '#1e293b', fontFamily: 'inherit', cursor: 'pointer', padding: 0 }}
+                />
+              </div>
+              {(filters.startDate || filters.endDate) && (
+                <button
+                  type="button"
+                  onClick={() => { handleFilterChange('startDate', ''); handleFilterChange('endDate', ''); }}
+                  title="Clear date range"
+                  style={{ border: 'none', background: '#dbeafe', color: '#2563eb', width: '16px', height: '16px', borderRadius: '50%', cursor: 'pointer', fontSize: '11px', lineHeight: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}
+                >
+                  ×
+                </button>
+              )}
+            </div>
+
             <select
               className="sel"
               style={{ width: '120px', padding: '6px', fontSize: '12px', border: '1px solid #d1d5db', borderRadius: '4px' }}
@@ -1781,7 +1865,11 @@ const ArchitectAccounts = () => {
                   <th style={{ padding: '10px 12px', width: '11%' }}>Account Number</th>
                   <th style={{ padding: '10px 12px', width: '11%' }}>Mobile Number</th>
                   {/* <th style={{ padding: '10px 12px', width: '13%' }}>Lead ID</th> */}
-                  <th style={{ padding: '10px 12px', width: '7%', textAlign: 'right' }}>Sheets</th>
+                  <th style={{ padding: '10px 12px', width: '7%', textAlign: 'right' }}>
+                    Sheets{(filters.startDate || filters.endDate) && (
+                      <div style={{ fontSize: '9px', fontWeight: 500, color: '#2563eb', textTransform: 'none' }}>in period</div>
+                    )}
+                  </th>
                   <th style={{ padding: '10px 12px', width: '10%', textAlign: 'right' }}>Pool Payout</th>
                   <th style={{ padding: '10px 12px', width: '9%', textAlign: 'right' }}>Paid</th>
                   <th style={{ padding: '10px 12px', textAlign: 'left', width: '9%' }}>Branch</th>

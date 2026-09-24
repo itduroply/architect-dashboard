@@ -13,17 +13,18 @@ import {
   Pie,
   Cell
 } from 'recharts';
-import { 
-  TrendingUp, 
-  Users, 
-  CheckCircle, 
+import {
+  TrendingUp,
+  Users,
+  CheckCircle,
   XCircle,
-  Layers, 
-  Coins, 
-  Download, 
-  RefreshCw, 
-  Award, 
-  FileSpreadsheet
+  Layers,
+  Coins,
+  Download,
+  RefreshCw,
+  Award,
+  FileSpreadsheet,
+  Calendar
 } from 'lucide-react';
 
 // Same extraction/name-cleanup rules as Architect Accounts, so an architect
@@ -67,13 +68,38 @@ const getArchitectDisplayName = (fullName) => {
     .trim() || 'Unmapped Architect';
 };
 
+// commission_ledger dates arrive as either a plain date ("2026-07-21") or a
+// timestamptz. Plain dates are parsed as local so they never slide back a day.
+const toLocalDate = (value) => {
+  if (!value) return null;
+  const str = String(value);
+  if (str.includes('T')) {
+    const parsed = new Date(str);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  }
+  const [y, m, d] = str.split('-').map(Number);
+  if (!y || !m || !d) return null;
+  return new Date(y, m - 1, d);
+};
+
+const MONTH_LABELS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const formatShortDate = (value) => {
+  const date = toLocalDate(value);
+  if (!date) return '';
+  return `${String(date.getDate()).padStart(2, '0')} ${MONTH_LABELS[date.getMonth()]} ${date.getFullYear()}`;
+};
+
 export default function DashboardPage() {
   const [loading, setLoading] = useState(true);
+  // null means "not fetched yet", distinct from an empty ledger.
+  const [rawLedgerRows, setRawLedgerRows] = useState(null);
   const [architectsList, setArchitectsList] = useState([]);
   const [categoryBusinessData, setCategoryBusinessData] = useState([]);
   const [skuBusinessData, setSkuBusinessData] = useState([]);
-  const [allSkuExcelData, setAllSkuExcelData] = useState([]); 
+  const [allSkuExcelData, setAllSkuExcelData] = useState([]);
   const [skuLimit, setSkuLimit] = useState(6);
+  const [startDate, setStartDate] = useState('');
+  const [endDate, setEndDate] = useState('');
 
   const [kpi, setKpi] = useState({
     totalArchitects: 0,
@@ -105,12 +131,38 @@ export default function DashboardPage() {
         if (!pageData || pageData.length < pageSize) break;
       }
 
+      setRawLedgerRows(ledger);
+    } catch (err) {
+      console.error('Ledger Fetch Error:', err.message);
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    syncDashboardMetrics();
+  }, [syncDashboardMetrics]);
+
+  // Recomputes purely from the already-fetched ledger rows whenever the
+  // claim-date range changes, so picking a range never re-hits Supabase.
+  useEffect(() => {
+    if (rawLedgerRows === null) return;
+    try {
+      const start = startDate ? toLocalDate(startDate) : null;
+      const end = endDate ? toLocalDate(endDate) : null;
+
       // Conversion source rows are retained at zero only as an upload
       // safeguard and must not appear in any account/product summary - same
       // filter Architect Accounts applies before aggregating.
-      const dataRows = ledger.filter(row =>
-        Number(row.total_eligible_sheets || row.totalSheets || row.sheets || 0) > 0
-      );
+      const dataRows = rawLedgerRows.filter((row) => {
+        if (Number(row.total_eligible_sheets || row.totalSheets || row.sheets || 0) <= 0) return false;
+        if (start || end) {
+          const claimDate = toLocalDate(row.claim_date);
+          if (!claimDate) return false;
+          if (start && claimDate < start) return false;
+          if (end && claimDate > end) return false;
+        }
+        return true;
+      });
       const aggregationMap = {};
 
       // Manual eligibility overrides set from Architect Accounts are cached
@@ -252,7 +304,7 @@ export default function DashboardPage() {
     } finally {
       setLoading(false);
     }
-  }, []); 
+  }, [rawLedgerRows, startDate, endDate]);
 
   useEffect(() => {
     syncDashboardMetrics();
@@ -346,6 +398,46 @@ export default function DashboardPage() {
           <RefreshCw size={14} className={loading ? 'animate-spin' : ''} /> Refresh Ledger
         </button>
         <div style={{ height: '20px', width: '1px', background: '#e2e8f0' }} />
+
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: '10px',
+          border: `1px solid ${(startDate || endDate) ? '#93c5fd' : '#e2e8f0'}`,
+          background: (startDate || endDate) ? '#eff6ff' : '#f8fafc',
+          borderRadius: '8px', padding: '6px 14px', transition: 'all 0.2s ease'
+        }}>
+          <Calendar size={14} color={(startDate || endDate) ? '#2563eb' : '#94a3b8'} />
+          <div style={{ display: 'flex', flexDirection: 'column', lineHeight: 1, gap: '2px' }}>
+            <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '.05em', textTransform: 'uppercase', color: '#94a3b8' }}>From</span>
+            <input
+              type="date"
+              value={startDate}
+              onChange={(e) => setStartDate(e.target.value)}
+              style={{ border: 'none', outline: 'none', background: 'transparent', fontSize: '13px', fontWeight: 600, color: '#1e293b', fontFamily: 'inherit', cursor: 'pointer', padding: 0 }}
+            />
+          </div>
+          <div style={{ width: '1px', height: '22px', background: '#e2e8f0' }} />
+          <div style={{ display: 'flex', flexDirection: 'column', lineHeight: 1, gap: '2px' }}>
+            <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '.05em', textTransform: 'uppercase', color: '#94a3b8' }}>To</span>
+            <input
+              type="date"
+              value={endDate}
+              onChange={(e) => setEndDate(e.target.value)}
+              style={{ border: 'none', outline: 'none', background: 'transparent', fontSize: '13px', fontWeight: 600, color: '#1e293b', fontFamily: 'inherit', cursor: 'pointer', padding: 0 }}
+            />
+          </div>
+          {(startDate || endDate) && (
+            <button
+              type="button"
+              onClick={() => { setStartDate(''); setEndDate(''); }}
+              title="Clear date range"
+              style={{ border: 'none', background: '#dbeafe', color: '#2563eb', width: '18px', height: '18px', borderRadius: '50%', cursor: 'pointer', fontSize: '11px', lineHeight: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}
+            >
+              ×
+            </button>
+          )}
+        </div>
+        <div style={{ height: '20px', width: '1px', background: '#e2e8f0' }} />
+
         <button className="btn-dl" onClick={() => downloadExcelReport('summary')} style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', padding: '8px 16px', background: '#fff', color: '#475569', border: '1px solid #e2e8f0', borderRadius: '8px', cursor: 'pointer', fontWeight: '500' }}>
           <Download size={14} /> Summary CSV
         </button>
@@ -359,6 +451,13 @@ export default function DashboardPage() {
           <Download size={14} /> Export Master Report
         </button>
       </div>
+
+      {(startDate || endDate) && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '14px', fontSize: '12.5px', color: '#2563eb', fontWeight: 600 }}>
+          <Calendar size={13} />
+          Showing data claimed from {startDate ? formatShortDate(startDate) : 'the beginning'} to {endDate ? formatShortDate(endDate) : 'today'}
+        </div>
+      )}
 
       {/* KPI Dashboard Grid */}
       <div className="kpi-row kpi-6" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '16px', marginBottom: '28px' }}>
