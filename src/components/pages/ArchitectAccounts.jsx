@@ -21,19 +21,11 @@ const toLocalDate = (value) => {
 const ArchitectAccounts = () => {
   const location = useLocation();
 
-  // Filters state management
+  
   const [filters, setFilters] = useState({
-    search: '',
-    tier: '',
-    eligibility: '',
-    status: '',
-    pencilOnly: false,
-    branch: '',
-    startDate: '',
-    endDate: '',
-  });
+    search: '', tier: '', eligibility: '',status: '',pencilOnly: false,branch: '',
+    startDate: '',endDate: '',});
 
-  // Operational state flags
   const [loading, setLoading] = useState(true);
   const [rawLedgerData, setRawLedgerData] = useState([]);
   const [rawRemittanceData, setRawRemittanceData] = useState([]);
@@ -281,21 +273,30 @@ const ArchitectAccounts = () => {
       )];
 
       let leadAddressMap = {};
+      const linkedLeadIds = new Set();
       if (leadIds.length > 0) {
         const { data: leadRows, error: leadError } = await supabase
           .from('leads_master')
-          .select('lead_id, address, landmark, city, district, state, pincode')
+          .select('lead_id, address, landmark, city, district, state, pincode, linked_architect')
           .in('lead_id', leadIds);
         if (leadError) throw leadError;
         leadAddressMap = (leadRows || []).reduce((acc, row) => {
           acc[row.lead_id] = row;
           return acc;
         }, {});
+        (leadRows || []).forEach(row => {
+          if (row.linked_architect && String(row.linked_architect).trim()) {
+            linkedLeadIds.add(String(row.lead_id || '').trim());
+          }
+        });
       }
 
       const grouped = (data || []).reduce((acc, row) => {
         const sheetsCount = parseFloat(row.total_eligible_sheets || 0);
         if (sheetsCount === 0) return acc;
+        // Same rule as the accounts table: a lead no longer linked to an
+        // architect in the Lead Master is not counted.
+        if (!linkedLeadIds.has(String(row.lead_id || '').trim())) return acc;
 
         const sku = row.product_sku || 'UNKNOWN';
         const leadId = String(row.lead_id || '').trim() || 'UNKNOWN';
@@ -606,6 +607,30 @@ const ArchitectAccounts = () => {
 
       if (remittanceRes.error) throw remittanceRes.error;
 
+      // The ledger is written once per claim and never refreshed, so a lead
+      // whose architect was later removed in the Lead Master still has its
+      // sheets here. Re-check the current linked_architect and keep only
+      // ledger rows whose lead is still linked to an architect.
+      const ledgerLeadIds = [...new Set(
+        ledgerData.map(row => String(row.lead_id || '').trim()).filter(Boolean)
+      )];
+      const leadIdChunks = [];
+      for (let i = 0; i < ledgerLeadIds.length; i += 200) {
+        leadIdChunks.push(ledgerLeadIds.slice(i, i + 200));
+      }
+      const leadChunkResults = await Promise.all(leadIdChunks.map(chunk =>
+        supabase.from('leads_master').select('lead_id, linked_architect').in('lead_id', chunk)
+      ));
+      const linkedLeadIds = new Set();
+      leadChunkResults.forEach(({ data: leadRows, error: leadError }) => {
+        if (leadError) throw leadError;
+        (leadRows || []).forEach(lead => {
+          if (lead.linked_architect && String(lead.linked_architect).trim()) {
+            linkedLeadIds.add(String(lead.lead_id || '').trim());
+          }
+        });
+      });
+
       const serverStatusMap = {};
       ledgerData.forEach(row => {
         const name = row.architect_name || row.architectName || '';
@@ -626,7 +651,8 @@ const ArchitectAccounts = () => {
       // Conversion source rows are retained at zero only as an upload safeguard.
       // They must not appear anywhere in account/product UI summaries.
       setRawLedgerData(ledgerData.filter(row =>
-        Number(row.total_eligible_sheets || row.totalSheets || 0) > 0
+        Number(row.total_eligible_sheets || row.totalSheets || 0) > 0 &&
+        linkedLeadIds.has(String(row.lead_id || '').trim())
       ));
       setRawRemittanceData(remittanceRes.data || []);
     } catch (err) {
