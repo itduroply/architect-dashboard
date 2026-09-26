@@ -23,8 +23,65 @@ import UploadCalculate from './components/pages/UploadCalculate';
 import SheetGapReport from './components/pages/SheetGapReport';
 import PaymentHistory from './components/pages/PaymentHistory';
 
+/* ✅ KEYBOARD HORIZONTAL SCROLL */
+// The body hides horizontal overflow, so the browser's Left/Right arrow keys
+// have nothing to scroll. Send them to the wide table box under the mouse
+// instead, or to the first one visible on screen.
+const ARROW_SCROLL_STEP = 80;
+
+const isHorizontalScroller = (el) => {
+  if (!(el instanceof HTMLElement) || el.scrollWidth <= el.clientWidth + 1) return false;
+  const { overflowX } = window.getComputedStyle(el);
+  return overflowX === 'auto' || overflowX === 'scroll';
+};
+
+const isOnScreen = (el) => {
+  const rect = el.getBoundingClientRect();
+  return rect.width > 0 && rect.height > 0 && rect.bottom > 0 && rect.top < window.innerHeight;
+};
+
+const findHorizontalScroller = (startEl) => {
+  for (let el = startEl; el && el !== document.body; el = el.parentElement) {
+    if (isHorizontalScroller(el)) return el;
+  }
+  return Array.from(document.querySelectorAll('div, section, main'))
+    .find(el => isHorizontalScroller(el) && isOnScreen(el)) || null;
+};
+
+function useArrowKeyHorizontalScroll() {
+  useEffect(() => {
+    let lastPointerEl = null;
+    const rememberPointer = (e) => { lastPointerEl = e.target; };
+
+    const handleKeyDown = (e) => {
+      if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+      if (e.defaultPrevented || e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+      const active = document.activeElement;
+      if (active && (active.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(active.tagName))) return;
+
+      const startEl = lastPointerEl && document.contains(lastPointerEl) ? lastPointerEl : null;
+      const scroller = findHorizontalScroller(startEl);
+      if (!scroller) return;
+
+      e.preventDefault();
+      scroller.scrollBy({ left: e.key === 'ArrowRight' ? ARROW_SCROLL_STEP : -ARROW_SCROLL_STEP });
+    };
+
+    document.addEventListener('mouseover', rememberPointer, { passive: true });
+    document.addEventListener('pointerdown', rememberPointer, { passive: true });
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('mouseover', rememberPointer);
+      document.removeEventListener('pointerdown', rememberPointer);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, []);
+}
+
 /* ✅ PROTECTED LAYOUT CONTAINER */
 function ProtectedLayout({ session }) {
+  useArrowKeyHorizontalScroll();
+
   // If no live Supabase token session exists, redirect back to the login block
   if (!session) {
     return <Navigate to="/" replace />;
@@ -37,7 +94,10 @@ function ProtectedLayout({ session }) {
       <div className="flex-1 flex flex-col min-w-0">
         <Topbar />
 
-        <main id="main" className="flex-1 p-6 overflow-y-auto">
+        {/* Tailwind is not installed, so min-w-0 on the parent does nothing and
+            Global.css makes the parent a row flexbox. Without minWidth 0 here,
+            a wide table stretches #main past the screen and the body clips it. */}
+        <main id="main" className="flex-1 p-6 overflow-y-auto" style={{ minWidth: 0 }}>
           <Outlet />
         </main>
       </div>

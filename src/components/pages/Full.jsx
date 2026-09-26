@@ -635,11 +635,12 @@ const styles = {
   tableWrapper: { 
     width: '100%',
     boxSizing: 'border-box',
-    overflowX: 'hidden'
+    overflowX: 'auto'
   },
-  mainTable: { 
-    width: '100%', 
-    tableLayout: 'fixed', 
+  mainTable: {
+    width: '100%',
+    minWidth: '1100px',
+    tableLayout: 'fixed',
     borderCollapse: 'collapse', 
     textAlign: 'left', 
     fontSize: '0.78rem',

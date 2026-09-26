@@ -65,6 +65,7 @@ const ArchitectAccounts = () => {
     targetSku: '',
     transferQty: '',
     reconversionReason: '',
+    sourceClaimNo: '',
   });
 
   // A converted Nature's Signature target may be converted again only after a
@@ -74,6 +75,7 @@ const ArchitectAccounts = () => {
     sourceSku: '',
     maxQty: 0,
     reason: '',
+    sourceClaimNo: '',
   });
 
   // Searchable Dropdown State for Target SKU
@@ -264,9 +266,42 @@ const ArchitectAccounts = () => {
     try {
       const { data, error } = await supabase
         .from('commission_ledger')
-        .select('product_sku, total_eligible_sheets, matrix_rate, total_payout_amount, payout_status, lead_id, lead_created_by, lead_created_by_mobile')
-        .eq('architect_name', architectName);
+        .select('claim_no, product_sku, total_eligible_sheets, matrix_rate, total_payout_amount, payout_status, lead_id, lead_created_by, lead_created_by_mobile')
+        .eq('architect_name', architectName)
+        .order('claim_no');
       if (error) throw error;
+
+      // Reconversion reasons live in the activity log, tagged with the claim
+      // number of the row they created. Page through, as the log can pass the
+      // 1,000-row request cap.
+      const reconversionByClaimNo = {};
+      const logPageSize = 1000;
+      for (let from = 0; ; from += logPageSize) {
+        const { data: logRows, error: logError } = await supabase
+          .from('user_activity_logs')
+          .select('description, created_at')
+          .eq('action_type', 'RECONVERT_NATURE_SIGNATURE')
+          .like('description', '%[Claim: %')
+          .order('created_at', { ascending: false })
+          .range(from, from + logPageSize - 1);
+        if (logError) {
+          console.error('Failed to load reconversion reasons:', logError.message);
+          break;
+        }
+        (logRows || []).forEach(logRow => {
+          const text = String(logRow.description || '');
+          const claimMatch = text.match(/\[Claim: ([^\]]+)\]\s*$/);
+          if (!claimMatch || reconversionByClaimNo[claimMatch[1]]) return;
+          const reasonMatch = text.match(/Reason: ([\s\S]*?) \[Claim: [^\]]+\]\s*$/);
+          const fromMatch = text.match(/^Reconverted '([^']*)'/);
+          reconversionByClaimNo[claimMatch[1]] = {
+            reason: reasonMatch ? reasonMatch[1] : '',
+            fromSku: fromMatch ? fromMatch[1] : '',
+            at: logRow.created_at,
+          };
+        });
+        if (!logRows || logRows.length < logPageSize) break;
+      }
 
       const leadIds = [...new Set(
         (data || []).map(row => String(row.lead_id || '').trim()).filter(Boolean)
@@ -324,15 +359,29 @@ const ArchitectAccounts = () => {
         lead.totalSheets += sheetsCount;
         lead.totalPayout += payoutAmount;
 
-        if (!lead.products[sku]) {
-          lead.products[sku] = { sku, sheets: 0, rate: 0, payout: 0, isConverted: false };
+        const rowIsConverted = row.payout_status === 'Converted Nature Signature Target' ||
+          (/NATURESIGNATURE/i.test(sku) && !/NATURES[\s_]+SIGNATURE/i.test(sku));
+        // Each converted row is one conversion or reconversion, so it gets its
+        // own line instead of being summed with other rows of the same SKU.
+        const claimNo = String(row.claim_no || '').trim();
+        const productKey = rowIsConverted && claimNo ? `${sku}::${claimNo}` : sku;
+
+        if (!lead.products[productKey]) {
+          lead.products[productKey] = {
+            key: productKey,
+            sku,
+            sheets: 0,
+            rate: 0,
+            payout: 0,
+            isConverted: false,
+            claimNo: rowIsConverted ? claimNo : '',
+            reconversion: rowIsConverted ? reconversionByClaimNo[claimNo] || null : null,
+          };
         }
-        const product = lead.products[sku];
+        const product = lead.products[productKey];
         product.sheets += sheetsCount;
         product.payout += payoutAmount;
         product.rate = parseFloat(row.matrix_rate || 0) || product.rate;
-        const rowIsConverted = row.payout_status === 'Converted Nature Signature Target' ||
-          (/NATURESIGNATURE/i.test(sku) && !/NATURES[\s_]+SIGNATURE/i.test(sku));
         product.isConverted = product.isConverted || rowIsConverted;
 
         return acc;
@@ -351,7 +400,9 @@ const ArchitectAccounts = () => {
     }
   };
 
-  const openTransferModal = (sourceSku, maxQty, reconversionReason = '') => {
+  // sourceClaimNo pins the conversion to one ledger row. Every conversion is
+  // stored as its own row, so a reconversion must draw from that row only.
+  const openTransferModal = (sourceSku, maxQty, reconversionReason = '', sourceClaimNo = '') => {
     setTransferState({
       show: true,
       loading: false,
@@ -360,6 +411,7 @@ const ArchitectAccounts = () => {
       targetSku: '',
       transferQty: maxQty.toString(),
       reconversionReason,
+      sourceClaimNo,
     });
     // Delhi architects default onto the 7% tab; every other state defaults onto 5%.
     setConversionTab(isDelhiArchitect ? '7%' : '5%');
@@ -425,55 +477,40 @@ const ArchitectAccounts = () => {
       if (fetchError) throw fetchError;
 
       const matchingRows = (allRows || []).filter(row =>
-        superNormalize(row.product_sku) === sourceSkuNormalized
+        superNormalize(row.product_sku) === sourceSkuNormalized &&
+        (!transferState.sourceClaimNo || row.claim_no === transferState.sourceClaimNo)
       );
 
       if (matchingRows.length === 0) {
         throw new Error("No matching source product SKU records found for this architect.");
       }
 
-      const existingTargetRow = (allRows || []).find(row =>
-        superNormalize(row.product_sku) === superNormalize(transferState.targetSku)
-      );
-
-      if (existingTargetRow) {
-        const newTargetSheets = parseFloat(existingTargetRow.total_eligible_sheets || 0) + qtyToTransfer;
-        const newTargetPayout = newTargetSheets * targetRate;
-
-        // 1. UPDATE existing row in commission_ledger including percentage
-        const { error: updateTargetErr } = await supabase
-          .from('commission_ledger')
-          .update({
-            total_eligible_sheets: newTargetSheets,
-            matrix_rate: targetRate,
-            total_payout_amount: newTargetPayout,
-            percentage: targetPercentage, // 👈 Added percentage column update
-            ...(sourceIsNaturesSignature ? { payout_status: 'Converted Nature Signature Target' } : {})
-          })
-          .eq('architect_name', detailsModal.architectName)
-          .eq('product_sku', existingTargetRow.product_sku); 
-
-        if (updateTargetErr) throw updateTargetErr;
-      } else {
+      // Every conversion and reconversion is stored as its own row, even when
+      // the architect already holds the target SKU, so each one keeps its own
+      // history. Topping up an existing row merged them into one line.
+      let bifurcatedClaimNo = '';
+      {
         const templateRow = matchingRows[0];
         const rawClaimNo = templateRow.claim_no || "CLAIM";
         
         const claimParts = rawClaimNo.split('-');
         const rootClaimNo = claimParts[0]; 
-        const currentSuffix = claimParts[1] || "1"; 
-        
-        let bifurcatedClaimNo = '';
-        
+        const currentSuffix = claimParts[1] || "1";
+
         const isNaturesSig = sourceIsNaturesSignature;
 
         if (isNaturesSig) {
           const targetBasePattern = `${rootClaimNo}-${currentSuffix}-1`;
-          
-          const existingSubCount = (allRows || []).filter(row => 
+
+          const existingSubCount = (allRows || []).filter(row =>
             row.claim_no && row.claim_no.startsWith(targetBasePattern + '.')
           ).length;
-          
-          bifurcatedClaimNo = `${targetBasePattern}.${existingSubCount + 1}`;
+
+          // Each conversion now adds a row, so skip any number already taken.
+          const takenClaimNos = new Set((allRows || []).map(row => row.claim_no));
+          let subNumber = existingSubCount + 1;
+          while (takenClaimNos.has(`${targetBasePattern}.${subNumber}`)) subNumber += 1;
+          bifurcatedClaimNo = `${targetBasePattern}.${subNumber}`;
         } else {
           const existingSuffixCount = (allRows || []).filter(row => 
             row.claim_no && row.claim_no.startsWith(rootClaimNo + '-')
@@ -558,7 +595,9 @@ const ArchitectAccounts = () => {
       if (transferState.reconversionReason.trim()) {
         await logTelemetry(
           'RECONVERT_NATURE_SIGNATURE',
-          `Reconverted '${transferState.sourceSku}' (${qtyToTransfer} sheets) to '${transferState.targetSku}'. Reason: ${transferState.reconversionReason.trim()}`
+          // The [Claim: ...] tag links this reason to the new ledger row, so the
+          // architect summary can show it under that reconverted sheet.
+          `Reconverted '${transferState.sourceSku}' (${qtyToTransfer} sheets) to '${transferState.targetSku}' at ${targetPercentage}. Reason: ${transferState.reconversionReason.trim()} [Claim: ${bifurcatedClaimNo}]`
         );
       }
       setTransferState(prev => ({ ...prev, show: false, transferQty: '', targetSku: '', loading: false }));
@@ -1245,6 +1284,7 @@ const ArchitectAccounts = () => {
 
                       {/* Products sold under this lead */}
                       {isExpanded && (
+                        <div style={{ overflowX: 'auto' }}>
                         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px', borderTop: '1px solid #e2e8f0' }}>
                           <thead>
                             <tr style={{ background: '#f8fafc' }}>
@@ -1263,11 +1303,37 @@ const ArchitectAccounts = () => {
                               // it worked before — same Lead ID/DGO/Mob/Sheets badges and button, unchanged.
                               if (isNaturesSignature) {
                                 return (
-                                  <tr key={product.sku} style={{ borderTop: '1px solid #f1f5f9' }}>
+                                  <tr key={product.key} style={{ borderTop: '1px solid #f1f5f9' }}>
                                     <td colSpan={5} style={{ padding: '12px 18px' }}>
                                       <div title={product.sku} style={{ color: '#0f172a', fontWeight: 600, fontSize: '13.5px', wordBreak: 'break-word', overflowWrap: 'anywhere', marginBottom: '8px' }}>
                                         {product.sku}
                                       </div>
+                                      {product.reconversion && (
+                                        <div
+                                          style={{
+                                            display: 'flex', flexDirection: 'column', gap: '3px', marginBottom: '8px',
+                                            background: '#fffbeb', border: '1px solid #fde68a', borderLeft: '3px solid #d97706',
+                                            borderRadius: '8px', padding: '8px 12px'
+                                          }}
+                                        >
+                                          <span style={{ fontSize: '10.5px', fontWeight: 700, color: '#b45309', letterSpacing: '.04em', textTransform: 'uppercase' }}>
+                                            ↻ Reconverted sheet
+                                            {product.reconversion.at && (
+                                              <span style={{ fontWeight: 500, color: '#92400e', textTransform: 'none', letterSpacing: 0 }}>
+                                                {' · '}{new Date(product.reconversion.at).toLocaleString('en-IN')}
+                                              </span>
+                                            )}
+                                          </span>
+                                          {product.reconversion.fromSku && (
+                                            <span style={{ fontSize: '12px', color: '#78350f', wordBreak: 'break-word' }}>
+                                              <strong>From:</strong> {product.reconversion.fromSku}
+                                            </span>
+                                          )}
+                                          <span style={{ fontSize: '12.5px', color: '#451a03', wordBreak: 'break-word' }}>
+                                            <strong>Reason:</strong> {product.reconversion.reason || '—'}
+                                          </span>
+                                        </div>
+                                      )}
                                       <div
                                         style={{
                                           display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '14px', flexWrap: 'wrap',
@@ -1297,10 +1363,10 @@ const ArchitectAccounts = () => {
                                         <button
                                           onClick={() => {
                                             if (product.isConverted) {
-                                              setReconversionModal({ show: true, sourceSku: product.sku, maxQty: product.sheets, reason: '' });
+                                              setReconversionModal({ show: true, sourceSku: product.sku, maxQty: product.sheets, reason: '', sourceClaimNo: product.claimNo });
                                               return;
                                             }
-                                            openTransferModal(product.sku, product.sheets);
+                                            openTransferModal(product.sku, product.sheets, '', product.claimNo);
                                           }}
                                           style={{
                                             background: product.isConverted ? '#d97706' : '#0284c7', color: '#ffffff', border: 'none',
@@ -1318,7 +1384,7 @@ const ArchitectAccounts = () => {
                               }
 
                               return (
-                                <tr key={product.sku} style={{ borderTop: '1px solid #f1f5f9' }}>
+                                <tr key={product.key} style={{ borderTop: '1px solid #f1f5f9' }}>
                                   <td title={product.sku} style={{ padding: '10px 18px', color: '#0f172a', fontWeight: 500, wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
                                     {product.sku}
                                   </td>
@@ -1333,6 +1399,7 @@ const ArchitectAccounts = () => {
                             })}
                           </tbody>
                         </table>
+                        </div>
                       )}
                     </div>
                   );
@@ -1359,14 +1426,14 @@ const ArchitectAccounts = () => {
               style={{ width: '100%', boxSizing: 'border-box', resize: 'vertical', border: '1px solid #cbd5e1', borderRadius: '8px', padding: '10px', fontSize: '13px', outline: 'none' }}
             />
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '18px' }}>
-              <button onClick={() => setReconversionModal({ show: false, sourceSku: '', maxQty: 0, reason: '' })} style={{ border: '1px solid #cbd5e1', background: '#ffffff', color: '#475569', borderRadius: '7px', padding: '9px 14px', cursor: 'pointer', fontWeight: 600 }}>
+              <button onClick={() => setReconversionModal({ show: false, sourceSku: '', maxQty: 0, reason: '', sourceClaimNo: '' })} style={{ border: '1px solid #cbd5e1', background: '#ffffff', color: '#475569', borderRadius: '7px', padding: '9px 14px', cursor: 'pointer', fontWeight: 600 }}>
                 Cancel
               </button>
               <button
                 disabled={!reconversionModal.reason.trim()}
                 onClick={() => {
-                  openTransferModal(reconversionModal.sourceSku, reconversionModal.maxQty, reconversionModal.reason.trim());
-                  setReconversionModal({ show: false, sourceSku: '', maxQty: 0, reason: '' });
+                  openTransferModal(reconversionModal.sourceSku, reconversionModal.maxQty, reconversionModal.reason.trim(), reconversionModal.sourceClaimNo);
+                  setReconversionModal({ show: false, sourceSku: '', maxQty: 0, reason: '', sourceClaimNo: '' });
                 }}
                 style={{ border: 'none', background: reconversionModal.reason.trim() ? '#d97706' : '#cbd5e1', color: '#ffffff', borderRadius: '7px', padding: '9px 14px', cursor: reconversionModal.reason.trim() ? 'pointer' : 'not-allowed', fontWeight: 600 }}
               >
@@ -1895,7 +1962,7 @@ const ArchitectAccounts = () => {
           ) : filteredArchitects.length === 0 ? (
             <div style={{ padding: '30px', textAlign: 'center', color: '#9ca3af', fontSize: '13px' }}>No matches found.</div>
           ) : (
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px', textAlign: 'left', tableLayout: 'fixed' }}>
+            <table style={{ width: '100%', minWidth: '1200px', borderCollapse: 'collapse', fontSize: '13px', textAlign: 'left', tableLayout: 'fixed' }}>
               <thead>
                 <tr style={{ background: '#f3f4f6', borderBottom: '2px solid #e5e7eb' }}>
                   <th style={{ padding: '10px 12px', width: '50px', textAlign: 'center' }}>Rank</th>
