@@ -32,7 +32,7 @@ const ArchitectAccounts = () => {
   const [architectsList, setArchitectsList] = useState([]);
   const [decorativeMasterList, setDecorativeMasterList] = useState([]);
 
-  // Conversion Percentage Tab State ('7%' Payout, '5% Payout', '10%' Payout)
+  // Conversion Percentage Tab State ('7%' Payout, '10%' Payout)
   const [conversionTab, setConversionTab] = useState('7%');
 
   // Custom React Modal Confirmation State
@@ -413,8 +413,8 @@ const ArchitectAccounts = () => {
       reconversionReason,
       sourceClaimNo,
     });
-    // Delhi architects default onto the 7% tab; every other state defaults onto 5%.
-    setConversionTab(isDelhiArchitect ? '7%' : '5%');
+    // Conversion offers only 7% and 10% for every architect; 7% is the default.
+    setConversionTab('7%');
     setTargetSkuSearch('');
     setTargetDropdownOpen(false);
   };
@@ -1102,13 +1102,6 @@ const ArchitectAccounts = () => {
 
   const uniqueBranches = [...new Set(architectsList.flatMap(item => item.branches || []))].sort();
 
-  // Delhi-based architects get the 10% Exception tab in the Convert modal;
-  // every other state only sees 5%/7%.
-  const selectedArchitectState = architectsList.find(
-    (a) => a.architect_name === detailsModal.architectName
-  )?.state || '';
-  const isDelhiArchitect = selectedArchitectState.trim().toLowerCase() === 'delhi';
-
   // Target SKUs filtered for Searchable Dropdown & Selected Rate Percentage Tab
   const filteredTargetSkus = decorativeMasterList
     .filter(item => {
@@ -1221,13 +1214,39 @@ const ArchitectAccounts = () => {
                 detailsModal.summaryData.map((lead) => {
                   const isExpanded = expandedLeadIds.has(lead.leadId);
                   const addressLine = [lead.address, lead.landmark].filter(Boolean).join(', ');
+                  // Same Nature's Signature test the expanded product rows use, so the
+                  // badge flags exactly the leads whose View shows a Nature's Signature row.
+                  const natureSignatureSheets = (lead.products || [])
+                    .filter(p => /NATURE'?S?[\s_]*SIGNATURE/i.test(p.sku || ''))
+                    .reduce((sum, p) => sum + (Number(p.sheets) || 0), 0);
+                  const hasNatureSignature = (lead.products || []).some(p => /NATURE'?S?[\s_]*SIGNATURE/i.test(p.sku || ''));
 
                   return (
                     <div key={lead.leadId} style={{ marginBottom: '18px', border: '1px solid #e2e8f0', borderRadius: '12px', overflow: 'hidden', background: '#ffffff' }}>
                       <div style={{ padding: '16px 18px' }}>
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '16px', flexWrap: 'wrap' }}>
                           <div style={{ minWidth: '220px' }}>
-                            <div style={{ fontSize: '15px', fontWeight: 700, color: '#0f172a' }}>Lead #{lead.leadId}</div>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+                              <div style={{ fontSize: '15px', fontWeight: 700, color: '#0f172a' }}>Lead #{lead.leadId}</div>
+                              {hasNatureSignature && (
+                                <span
+                                  title="This site has Nature's Signature sheets"
+                                  style={{
+                                    display: 'inline-flex', alignItems: 'center', gap: '5px',
+                                    background: 'linear-gradient(135deg, #ecfdf5 0%, #d1fae5 100%)',
+                                    border: '1px solid #6ee7b7', color: '#047857',
+                                    borderRadius: '999px', padding: '3px 10px',
+                                    fontSize: '11px', fontWeight: 700, letterSpacing: '.02em', whiteSpace: 'nowrap'
+                                  }}
+                                >
+                                  <span style={{ fontSize: '12px' }}>🌿</span>
+                                  Nature's Signature
+                                  {natureSignatureSheets > 0 && (
+                                    <span style={{ fontWeight: 600, color: '#065f46' }}>· {natureSignatureSheets.toFixed(1)} sheets</span>
+                                  )}
+                                </span>
+                              )}
+                            </div>
 
                             {/* DGO name + mobile for the lead */}
                             <div style={{ display: 'flex', gap: '16px', marginTop: '6px', flexWrap: 'wrap' }}>
@@ -1494,35 +1513,12 @@ const ArchitectAccounts = () => {
               </div>
             </div>
 
-            {/* Percentage Type Switcher Tabs (7% Payout vs 5% Payout vs 10% Payout) */}
+            {/* Percentage Type Switcher Tabs (7% Payout vs 10% Payout) */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
               <label style={{ fontSize: '13px', fontWeight: 600, color: '#334155' }}>
                 Conversion Rate Type <span style={{ color: '#ef4444' }}>*</span>
               </label>
               <div style={{ display: 'flex', gap: '10px' }}>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setConversionTab('5%');
-                    setTransferState(prev => ({ ...prev, targetSku: '' }));
-                    setTargetSkuSearch('');
-                  }}
-                  style={{
-                    flex: 1,
-                    padding: '8px 14px',
-                    borderRadius: '8px',
-                    fontSize: '13px',
-                    fontWeight: 600,
-                    cursor: 'pointer',
-                    border: '1.5px solid',
-                    borderColor: conversionTab === '5%' ? '#16a34a' : '#cbd5e1',
-                    background: conversionTab === '5%' ? '#dcfce7' : '#ffffff',
-                    color: conversionTab === '5%' ? '#15803d' : '#64748b',
-                    transition: 'all 0.15s ease'
-                  }}
-                >
-                  5% Payout
-                </button>
                 <button
                   type="button"
                   onClick={() => {
@@ -1546,38 +1542,36 @@ const ArchitectAccounts = () => {
                 >
                   7% Payout
                 </button>
-                {isDelhiArchitect && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setConversionTab('10%');
-                      setTransferState(prev => ({ ...prev, targetSku: '' }));
-                      setTargetSkuSearch('');
-                    }}
-                    style={{
-                      flex: 1,
-                      padding: '8px 14px',
-                      borderRadius: '8px',
-                      fontSize: '13px',
-                      fontWeight: 600,
-                      cursor: 'pointer',
-                      border: '1.5px solid',
-                      borderColor: conversionTab === '10%' ? '#d97706' : '#cbd5e1',
-                      background: conversionTab === '10%' ? '#fef3c7' : '#ffffff',
-                      color: conversionTab === '10%' ? '#b45309' : '#64748b',
-                      transition: 'all 0.15s ease'
-                    }}
-                  >
-                  10% Payout
-                  </button>
-                )}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setConversionTab('10%');
+                    setTransferState(prev => ({ ...prev, targetSku: '' }));
+                    setTargetSkuSearch('');
+                  }}
+                  style={{
+                    flex: 1,
+                    padding: '8px 14px',
+                    borderRadius: '8px',
+                    fontSize: '13px',
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                    border: '1.5px solid',
+                    borderColor: conversionTab === '10%' ? '#d97706' : '#cbd5e1',
+                    background: conversionTab === '10%' ? '#fef3c7' : '#ffffff',
+                    color: conversionTab === '10%' ? '#b45309' : '#64748b',
+                    transition: 'all 0.15s ease'
+                  }}
+                >
+                10% Payout
+                </button>
               </div>
             </div>
 
             {/* Target SKU Selection with Searchable Combobox */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', position: 'relative' }} ref={dropdownRef}>
               <label style={{ fontSize: '13px', fontWeight: 600, color: '#334155' }}>
-                Search & Select Target Decorative SKU ({conversionTab === '10%' ? '10% Payout' : conversionTab === '5%' ? '5% Payout' : '7% Payout'}) <span style={{ color: '#ef4444' }}>*</span>
+                Search & Select Target Decorative SKU ({conversionTab === '10%' ? '10% Payout' : '7% Payout'}) <span style={{ color: '#ef4444' }}>*</span>
               </label>
 
               {/* Text Search Bar Input */}
