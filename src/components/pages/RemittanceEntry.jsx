@@ -34,7 +34,7 @@ export default function RemittanceReportingManager() {
   const [error, setError] = useState(null);
   const [snackbar, setSnackbar] = useState({ show: false, message: '' });
 
-  const [selectedMonth, setSelectedMonth] = useState('07'); 
+  const [selectedMonth, setSelectedMonth] = useState('all');
   const [exportPreviewData, setExportPreviewData] = useState([]);
 
   const [importFile, setImportFile] = useState(null);
@@ -56,6 +56,7 @@ export default function RemittanceReportingManager() {
         if (fetchError) throw fetchError;
 
         const filteredRecords = (data || []).filter(row => {
+          if (selectedMonth === 'all') return true;
           if (!row.created_payment_date) return false;
           const parts = row.created_payment_date.split('-');
           return parts[1] === selectedMonth;
@@ -106,7 +107,9 @@ export default function RemittanceReportingManager() {
       });
       worksheet['!cols'] = cols;
 
-      const monthLabel = monthsList.find(m => m.value === selectedMonth)?.label || 'Report';
+      const monthLabel = selectedMonth === 'all'
+        ? 'All_Months'
+        : monthsList.find(m => m.value === selectedMonth)?.label || 'Report';
       XLSX.writeFile(workbook, `Pending_Remittances_Report_${monthLabel}.xlsx`);
       
       setSnackbar({ show: true, message: `Successfully exported ${exportPreviewData.length} rows to Excel.` });
@@ -243,7 +246,8 @@ export default function RemittanceReportingManager() {
     <div className="centered-reporting-wrapper">
       <style>{`
         .centered-reporting-wrapper {
-          width: 140%;
+          width: 100%;
+          min-width: 0;
           max-width: 1150px;
           margin: 2rem auto;
           padding: 0 1.5rem;
@@ -322,6 +326,7 @@ export default function RemittanceReportingManager() {
           border-radius: 10px;
           margin-bottom: 1.5rem;
           gap: 1.5rem;
+          flex-wrap: wrap;
         }
         .control-element-group {
           display: flex;
@@ -404,6 +409,10 @@ export default function RemittanceReportingManager() {
           border-radius: 8px;
           background: #ffffff;
           border: 1px solid #eaddcc;
+          outline: none;
+        }
+        .table-view-scroller:focus-visible {
+          box-shadow: 0 0 0 2px #b8956c;
         }
         table.clean-ledger-table {
           width: 100%;
@@ -538,6 +547,7 @@ export default function RemittanceReportingManager() {
                   value={selectedMonth}
                   onChange={(e) => setSelectedMonth(e.target.value)}
                 >
+                  <option value="all">All Months</option>
                   {monthsList.map(m => (
                     <option key={m.value} value={m.value}>{m.label}</option>
                   ))}
@@ -563,7 +573,7 @@ export default function RemittanceReportingManager() {
                 <div>Sifting pending records...</div>
               </div>
             ) : (
-              <div className="table-view-scroller">
+              <div className="table-view-scroller" tabIndex={0}>
                 <table className="clean-ledger-table">
                   <thead>
                     <tr>
@@ -646,7 +656,7 @@ export default function RemittanceReportingManager() {
                 <h3 style={{ fontSize: '0.85rem', color: '#8c7662', marginBottom: '0.75rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
                   Staging Mapping Grid Preview:
                 </h3>
-                <div className="table-view-scroller">
+                <div className="table-view-scroller" tabIndex={0}>
                   <table className="clean-ledger-table">
                     <thead>
                       <tr>

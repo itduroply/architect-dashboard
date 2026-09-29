@@ -21,8 +21,6 @@ const DURATION_OPTIONS = [
   { id: '12m', label: 'Last 12 Months', months: 12 }
 ];
 
-/* ── Value helpers ───────────────────────────────────────── */
-
 // commission_ledger stores the architect as "2511001131   | Rajusharma";
 // payout_request keeps the same number in account_identity.
 const extractAccountId = (fullName) => {
