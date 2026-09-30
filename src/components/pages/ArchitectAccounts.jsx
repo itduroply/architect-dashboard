@@ -23,7 +23,7 @@ const ArchitectAccounts = () => {
 
   
   const [filters, setFilters] = useState({
-    search: '', tier: '', eligibility: '',status: '',pencilOnly: false,branch: '',
+    search: '', tier: '', eligibility: '',status: '',natureSignature: '',branch: '',
     startDate: '',endDate: '',});
 
   const [loading, setLoading] = useState(true);
@@ -728,6 +728,7 @@ const ArchitectAccounts = () => {
            raw_pool_payout: 0,
            credited_amount: 0,
            hasNaturesSignature: false,
+           hadNaturesSignature: false,
            associatedNames: new Set(),
            leadIds: new Set(),
            architectMobiles: new Set(),
@@ -753,6 +754,11 @@ const ArchitectAccounts = () => {
       const upperSku = (row.product_sku || '').toUpperCase();
       if ((upperSku.includes('NATURES SIGNATURE') || upperSku.includes('NATURE SIGNATURE')) && sheets > 0) {
         aggregationMap[archId].hasNaturesSignature = true;
+      }
+      // A fully converted source row drops to 0 sheets and is filtered out, so
+      // the conversion's target row is what shows the architect had it.
+      if (row.payout_status === 'Converted Nature Signature Target') {
+        aggregationMap[archId].hadNaturesSignature = true;
       }
     });
 
@@ -1069,7 +1075,11 @@ const ArchitectAccounts = () => {
       (filters.status === 'balance' && row.balance_due > 0) ||
       (filters.status === 'cleared' && row.balance_due === 0);
 
-    const matchesPencil = !filters.pencilOnly || row.hasNaturesSignature;
+    const matchesPencil =
+      filters.natureSignature === '' ||
+      (filters.natureSignature === 'all' && (row.hasNaturesSignature || row.hadNaturesSignature)) ||
+      (filters.natureSignature === 'pending' && row.hasNaturesSignature) ||
+      (filters.natureSignature === 'converted' && row.hadNaturesSignature && !row.hasNaturesSignature);
     const matchesBranch =
       filters.branch === '' ||
       (row.branches || []).some((branch) => branch.toLowerCase() === filters.branch.toLowerCase());
@@ -1926,8 +1936,9 @@ const ArchitectAccounts = () => {
             </select>
           </div>
 
-          <button
-            onClick={() => handleFilterChange('pencilOnly', !filters.pencilOnly)}
+          <select
+            value={filters.natureSignature}
+            onChange={(e) => handleFilterChange('natureSignature', e.target.value)}
             style={{
               fontSize: '12px',
               padding: '6px 12px',
@@ -1935,18 +1946,17 @@ const ArchitectAccounts = () => {
               fontWeight: 500,
               borderRadius: '4px',
               border: '1px solid',
-              borderColor: filters.pencilOnly ? '#2563eb' : '#d1d5db',
-              background: filters.pencilOnly ? '#eff6ff' : '#fff',
-              color: filters.pencilOnly ? '#2563eb' : '#374151',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '6px',
+              borderColor: filters.natureSignature ? '#2563eb' : '#d1d5db',
+              background: filters.natureSignature ? '#eff6ff' : '#fff',
+              color: filters.natureSignature ? '#2563eb' : '#374151',
               transition: 'all 0.2s ease'
             }}
           >
-            <span>✏️</span> 
-            {filters.pencilOnly ? 'Showing Nature Signature' : 'Filter by Nature Signature'}
-          </button>
+            <option value="">All Sheet</option>
+            <option value="all">All Nature Signature</option>
+            {/* <option value="pending">✏️ Pending conversion</option>
+            <option value="converted">✅ Fully converted</option> */}
+          </select>
         </div>
 
         {/* Dynamic Table Content Renderer */}
@@ -2025,6 +2035,23 @@ const ArchitectAccounts = () => {
                           title="Contains active Nature's Signature products eligible for conversion"
                         >
                           ✏️
+                        </span>
+                      )}
+                      {!row.hasNaturesSignature && row.hadNaturesSignature && (
+                        <span
+                          style={{
+                            color: '#15803d',
+                            fontSize: '13px',
+                            background: '#f0fdf4',
+                            padding: '2px 5px',
+                            borderRadius: '4px',
+                            border: '1px solid #bbf7d0',
+                            display: 'inline-flex',
+                            alignItems: 'center'
+                          }}
+                          title="Nature's Signature sheets fully converted"
+                        >
+                          ✅
                         </span>
                       )}
                       <span>{getArchitectDisplayName(row.architect_name)}</span>
