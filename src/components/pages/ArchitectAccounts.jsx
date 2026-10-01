@@ -391,7 +391,26 @@ const ArchitectAccounts = () => {
         .map(lead => ({ ...lead, products: Object.values(lead.products) }))
         .sort((a, b) => b.totalPayout - a.totalPayout);
 
-      setDetailsModal({ show: true, loading: false, architectName, summaryData: leadsList });
+      // Mapped ISR comes from the Master Architect upload, matched on the
+      // account number that prefixes architect_name ("2604000311 | Name").
+      // A failed lookup only hides the ISR line; the summary still opens.
+      let mappedIsr = '';
+      const accountNumber = String(architectName || '').split('|')[0].trim();
+      if (accountNumber) {
+        const { data: masterRow, error: masterError } = await supabase
+          .from('master_architect')
+          .select('mapped_isr')
+          .eq('account_number', accountNumber)
+          .limit(1)
+          .maybeSingle();
+        if (masterError) {
+          console.error('Failed to load mapped ISR:', masterError.message);
+        } else {
+          mappedIsr = String(masterRow?.mapped_isr || '').trim();
+        }
+      }
+
+      setDetailsModal({ show: true, loading: false, architectName, mappedIsr, summaryData: leadsList });
 
     } catch (err) {
       console.error("Failed to fetch architect summary:", err.message);
@@ -1208,6 +1227,14 @@ const ArchitectAccounts = () => {
               <div>
                 <h3 style={{ margin: 0, fontSize: '19px', fontWeight: 700, color: '#0f172a' }}>Sales Summary Breakdown</h3>
                 <p style={{ margin: '4px 0 0 0', fontSize: '13.5px', color: '#64748b' }}>{detailsModal.architectName}</p>
+                {!detailsModal.loading && (
+                  <p style={{ margin: '6px 0 0 0', fontSize: '13px', color: '#64748b' }}>
+                    <strong style={{ color: '#475569' }}>Mapped By:</strong>{' '}
+                    <span style={{ color: detailsModal.mappedIsr ? '#0f172a' : '#94a3b8', fontWeight: detailsModal.mappedIsr ? 600 : 400 }}>
+                      {detailsModal.mappedIsr || 'No ISR mapped'}
+                    </span>
+                  </p>
+                )}
               </div>
               <button 
                 onClick={() => setDetailsModal({ show: false, loading: false, architectName: '', summaryData: [] })}
