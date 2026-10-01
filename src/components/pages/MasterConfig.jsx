@@ -265,6 +265,63 @@ const handleFileChange = (event) => {
             const sizeColIdx = normalizedHeaders.findIndex((h) => h === "size" || h === "thickness");
             const payout5Idx = normalizedHeaders.findIndex((h) => h === "5%payout");
 
+            // The "Masterpiece" sheet holds 8' (32mm) and 10' (40mm) side by
+            // side. The price is the 7% / 10% payout of each block, never the
+            // "32 sq ft" / "40 Sq ft" sheet price or the RS/SQ.FT column.
+            const masterpieceBlocks = [
+              { size: "32mm", payout7: "7%payout", payout10: "10%payout" },
+              { size: "40mm", payout7: "7%payout2", payout10: "10%payout2" },
+            ]
+              .map((b) => ({
+                size: b.size,
+                tiers: [
+                  { idx: normalizedHeaders.findIndex((h) => h === b.payout7), percentage: "7%" },
+                  { idx: normalizedHeaders.findIndex((h) => h === b.payout10), percentage: "10%" },
+                ].filter((t) => t.idx !== -1),
+              }))
+              .filter((b) => b.tiers.length > 0);
+
+            if (tag === "MASTERPIECE" && !sheetSize && masterpieceBlocks.length > 0) {
+              const lookup = await fetchDecorativeLookup();
+
+              for (let i = headerRowIndex + 1; i < rawRows.length; i++) {
+                const row = rawRows[i];
+                if (!row || row.every((cell) => cell === null || cell === "")) continue;
+
+                const rawName = row[veneerNameIdx];
+                if (!rawName) continue;
+                const cleanName = rawName.toString().trim().toUpperCase();
+
+                masterpieceBlocks.forEach((block) => {
+                  // Veneers not made in a size carry "*" / blank in that block.
+                  const tierValues = block.tiers
+                    .map((t) => ({ ...t, value: row[t.idx] }))
+                    .filter((t) => typeof t.value === "number" && !isNaN(t.value));
+                  if (tierValues.length === 0) return;
+
+                  const existing = lookup.get(`${tag}|${cleanName}|${block.size}`);
+                  if (!existing) {
+                    unmatchedVeneers.push(`${cleanName} (${block.size})`);
+                    return;
+                  }
+
+                  tierValues.forEach((t) => {
+                    payload.push({
+                      group: existing.group,
+                      code: existing.code,
+                      sku: existing.sku,
+                      size: existing.size,
+                      // Excel shows the payout rounded (442.4 shows as 442)
+                      price: Math.round(t.value),
+                      percentage: t.percentage,
+                      updated_by: currentUserName,
+                    });
+                  });
+                });
+              }
+              continue;
+            }
+
             if (!tag || payout5Idx === -1) {
               skippedSheets.push(sheetName);
               continue;
