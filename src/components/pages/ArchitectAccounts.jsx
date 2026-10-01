@@ -18,6 +18,12 @@ const toLocalDate = (value) => {
   return new Date(y, m - 1, d);
 };
 
+// Approved status date shown against each sheet line, e.g. "21 Aug 2026".
+const formatStatusDate = (value) => {
+  const date = toLocalDate(value);
+  return date ? date.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) : '—';
+};
+
 const ArchitectAccounts = () => {
   const location = useLocation();
 
@@ -266,7 +272,7 @@ const ArchitectAccounts = () => {
     try {
       const { data, error } = await supabase
         .from('commission_ledger')
-        .select('claim_no, product_sku, total_eligible_sheets, matrix_rate, total_payout_amount, payout_status, lead_id, lead_created_by, lead_created_by_mobile')
+        .select('claim_no, product_sku, total_eligible_sheets, matrix_rate, total_payout_amount, payout_status, lead_id, lead_created_by, lead_created_by_mobile, status_date')
         .eq('architect_name', architectName)
         .order('claim_no');
       if (error) throw error;
@@ -373,6 +379,7 @@ const ArchitectAccounts = () => {
             sheets: 0,
             rate: 0,
             payout: 0,
+            statusDate: '',
             isConverted: false,
             claimNo: rowIsConverted ? claimNo : '',
             reconversion: rowIsConverted ? reconversionByClaimNo[claimNo] || null : null,
@@ -383,6 +390,9 @@ const ArchitectAccounts = () => {
         product.payout += payoutAmount;
         product.rate = parseFloat(row.matrix_rate || 0) || product.rate;
         product.isConverted = product.isConverted || rowIsConverted;
+        // A line can sum several claims; keep the latest approved status date.
+        const rowStatusDate = String(row.status_date || '').slice(0, 10);
+        if (rowStatusDate > product.statusDate) product.statusDate = rowStatusDate;
 
         return acc;
       }, {});
@@ -1346,6 +1356,7 @@ const ArchitectAccounts = () => {
                             <tr style={{ background: '#f8fafc' }}>
                               <th style={{ textAlign: 'left', padding: '10px 18px', fontSize: '11px', fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: '.04em' }}>Product SKU</th>
                               <th style={{ textAlign: 'right', padding: '10px 18px', fontSize: '11px', fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: '.04em' }}>Eligible Sheets</th>
+                              <th style={{ textAlign: 'right', padding: '10px 18px', fontSize: '11px', fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: '.04em' }}>Approved Date</th>
                               <th style={{ textAlign: 'right', padding: '10px 18px', fontSize: '11px', fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: '.04em' }}>Unit Price</th>
                               <th style={{ textAlign: 'right', padding: '10px 18px', fontSize: '11px', fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: '.04em' }}>Total Payout</th>
                               <th style={{ width: '1%' }}></th>
@@ -1360,7 +1371,7 @@ const ArchitectAccounts = () => {
                               if (isNaturesSignature) {
                                 return (
                                   <tr key={product.key} style={{ borderTop: '1px solid #f1f5f9' }}>
-                                    <td colSpan={5} style={{ padding: '12px 18px' }}>
+                                    <td colSpan={6} style={{ padding: '12px 18px' }}>
                                       <div title={product.sku} style={{ color: '#0f172a', fontWeight: 600, fontSize: '13.5px', wordBreak: 'break-word', overflowWrap: 'anywhere', marginBottom: '8px' }}>
                                         {product.sku}
                                       </div>
@@ -1412,6 +1423,11 @@ const ArchitectAccounts = () => {
                                         </div>
 
                                         <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', alignItems: 'flex-end' }}>
+                                          <span style={{ fontSize: '10px', fontWeight: 700, color: '#64748b', letterSpacing: '.04em', textTransform: 'uppercase' }}>Approved Date</span>
+                                          <span style={{ fontSize: '13px', color: '#1e293b', whiteSpace: 'nowrap' }}>{formatStatusDate(product.statusDate)}</span>
+                                        </div>
+
+                                        <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', alignItems: 'flex-end' }}>
                                           <span style={{ fontSize: '10px', fontWeight: 700, color: '#64748b', letterSpacing: '.04em', textTransform: 'uppercase' }}>Sheets</span>
                                           <span style={{ fontSize: '13.5px', fontWeight: 700, color: '#0f172a', whiteSpace: 'nowrap' }}>{product.sheets.toFixed(1)}</span>
                                         </div>
@@ -1445,6 +1461,7 @@ const ArchitectAccounts = () => {
                                     {product.sku}
                                   </td>
                                   <td style={{ padding: '10px 18px', textAlign: 'right', color: '#334155' }}>{product.sheets.toFixed(1)}</td>
+                                  <td style={{ padding: '10px 18px', textAlign: 'right', color: '#334155', whiteSpace: 'nowrap' }}>{formatStatusDate(product.statusDate)}</td>
                                   <td style={{ padding: '10px 18px', textAlign: 'right', color: '#334155' }}>₹{product.rate.toFixed(2)}</td>
                                   <td style={{ padding: '10px 18px', textAlign: 'right', fontWeight: 700, color: '#0f172a' }}>
                                     ₹{product.payout.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
