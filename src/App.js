@@ -17,6 +17,7 @@ import MasterConfig from './components/pages/MasterConfig';
 import UserManagement from './components/pages/UserManagement';
 import UploadHistory from './components/pages/UploadHistory';
 import ArchitectAccounts from './components/pages/ArchitectAccounts';
+import ArchitectNoInfluencer from './components/pages/ArchitectNoInfluencer';
 import RemittanceEntry from './components/pages/RemittanceEntry';
 import MyProfile from './components/pages/MyProfile';
 import UploadCalculate from './components/pages/UploadCalculate';
@@ -158,6 +159,7 @@ export default function App() {
           <Route path="master" element={<MasterConfig />} />
           <Route path="history" element={<UploadHistory />} />
           <Route path="accounts" element={<ArchitectAccounts />} />
+          <Route path="no-influencer" element={<ArchitectNoInfluencer />} />
           <Route path="remittance" element={<RemittanceEntry />} />
           <Route path="profile" element={<MyProfile />} />
           <Route path="claims" element={<UploadCalculate />} />

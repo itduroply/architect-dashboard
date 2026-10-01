@@ -15,6 +15,7 @@ const SIDEBAR_OPTIONS = [
   { id: 'peligible', label: '📋 Branch Eligibility', group: 'Branch Eligibility' },
   { id: 'ventura', label: '📈 Complete Branch Data', group: 'Complete Information' },
   { id: 'accounts', label: '👛 Architect Accounts', group: 'Accounts' },
+  { id: 'no-influencer', label: '🏗️ Architect-Only Sites', group: 'Accounts' },
   { id: 'pan-architect', label: '🌐 Pan Architect', group: 'Accounts' },
   { id: 'payout', label: '💰 Payout Request', group: 'Accounts' },
   { id: 'remittance', label: '💳 Remittance Entry', group: 'Accounts' },

@@ -218,6 +218,7 @@ export default function UploadExcel() {
               is_active: row['Is Active'] || row['is_active'] || 'active',
               dealer: row['Dealer'] || row['dealer'] || row['Dealer Name'] || row['dealer_name'] || row['DEALER'] || row['Main Dealer'] || null, 
               market_city: row['Market City'] || row['market_city'],
+              mapped_isr: String(row['Mapped ISR*'] || row['Mapped ISR'] || row['mapped_isr'] || '').trim() || null,
               linked_architect: row['Linked Architect'] ? parseInt(row['Linked Architect'], 10) : null
             };
           });
@@ -355,6 +356,7 @@ export default function UploadExcel() {
           mobile_number: editForm.mobile_number,
           market_city: editForm.market_city,
           dealer: editForm.dealer,
+          mapped_isr: editForm.mapped_isr ? String(editForm.mapped_isr).trim() || null : null,
           is_active: editForm.is_active,
           linked_architect: editForm.linked_architect ? parseInt(editForm.linked_architect, 10) : null
         })
@@ -461,6 +463,7 @@ export default function UploadExcel() {
                   <th style={styles.th}>Mobile Number</th>
                   <th style={styles.th}>Market City</th>
                   <th style={styles.th}>Dealer State</th>
+                  <th style={styles.th}>Mapped ISR</th>
                   <th style={styles.th}>Last Login</th>
                   <th style={styles.th}>Status</th>
                   <th style={{ ...styles.th, textAlign: 'center' }}>Actions</th>
@@ -474,6 +477,7 @@ export default function UploadExcel() {
                     <td style={styles.td}>{row.mobile_number}</td>
                     <td style={styles.td}>{row.market_city}</td>
                     <td style={styles.td}>{row.dealer || '-'}</td>
+                    <td style={styles.td}>{row.mapped_isr || '-'}</td>
       <td style={styles.td}>
   {row.last_login 
     ? new Date(
@@ -587,6 +591,10 @@ export default function UploadExcel() {
                 <div style={styles.formGroup}>
                   <label style={{ color: '#736557', fontSize: '11px', fontWeight: '600' }}>Dealer</label>
                   <input type="text" value={editForm.dealer || ''} onChange={e => setEditForm({...editForm, dealer: e.target.value})} style={styles.input} />
+                </div>
+                <div style={styles.formGroup}>
+                  <label style={{ color: '#736557', fontSize: '11px', fontWeight: '600' }}>Mapped ISR</label>
+                  <input type="text" value={editForm.mapped_isr || ''} onChange={e => setEditForm({...editForm, mapped_isr: e.target.value})} style={styles.input} />
                 </div>
                 <div style={styles.formGroup}>
                   <label style={{ color: '#736557', fontSize: '11px', fontWeight: '600' }}>Status Matrix</label>

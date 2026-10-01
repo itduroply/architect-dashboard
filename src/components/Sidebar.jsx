@@ -72,6 +72,7 @@ export default function Sidebar() {
     if (p.includes('/payment-history')) return 'payment-history';
     if (p.includes('/history')) return 'history';
     if (p.includes('/accounts')) return 'accounts';
+    if (p.includes('/no-influencer')) return 'no-influencer';
     if (p.includes('/remittance')) return 'remittance';
     if (p.includes('/claims')) return 'claims';
     if (p.includes('/sheet-gap')) return 'sheet-gap';
@@ -92,6 +93,7 @@ export default function Sidebar() {
       users: '/app/users',
       history: '/app/history',
       accounts: '/app/accounts',
+      'no-influencer': '/app/no-influencer',
       remittance: '/app/remittance',
       claims: '/app/claims',
       'sheet-gap': '/app/sheet-gap',
@@ -142,7 +144,7 @@ export default function Sidebar() {
   const showQuerySection = hasAccess('query');
   const showEligibilitySection = hasAccess('peligible');
   const showVenturaSection = hasAccess('ventura');
-  const showAccountsSection = hasAccess('accounts') || hasAccess('pan-architect') || hasAccess('payout') || hasAccess('remittance') || hasAccess('claims') || hasAccess('commission') || hasAccess('sheet-gap') || hasAccess('payment-history');
+  const showAccountsSection = hasAccess('accounts') || hasAccess('no-influencer') || hasAccess('pan-architect') || hasAccess('payout') || hasAccess('remittance') || hasAccess('claims') || hasAccess('commission') || hasAccess('sheet-gap') || hasAccess('payment-history');
 
   return (
     <nav id="sidebar" style={{ display: 'flex', flexDirection: 'column', height: '100vh', overflow: 'hidden' }}>
@@ -275,6 +277,16 @@ export default function Sidebar() {
                 onClick={() => handleNavigation('accounts')}
               >
                 <span className="sb-icon">👛</span> Architect Accounts
+              </div>
+            )}
+
+            {hasAccess('no-influencer') && (
+              <div
+                className={getNavItemClass('no-influencer')}
+                id="nav-no-influencer"
+                onClick={() => handleNavigation('no-influencer')}
+              >
+                <span className="sb-icon">🏗️</span> Architect-Only Sites
               </div>
             )}
             

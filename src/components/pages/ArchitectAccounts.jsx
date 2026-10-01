@@ -1954,8 +1954,8 @@ const ArchitectAccounts = () => {
           >
             <option value="">All Sheet</option>
             <option value="all">All Nature Signature</option>
-            {/* <option value="pending">✏️ Pending conversion</option>
-            <option value="converted">✅ Fully converted</option> */}
+            <option value="pending">✏️ Pending conversion</option>
+            <option value="converted">✅ Fully converted</option>
           </select>
         </div>
 
