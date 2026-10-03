@@ -25,6 +25,15 @@ const SIDEBAR_OPTIONS = [
   { id: 'payment-history', label: '🧾 Payment History', group: 'Accounts' },
 ];
 
+// Keeps digits only and drops a +91 / 91 / 0 prefix, so pasted numbers like
+// "+91 98765 43210" or "098765-43210" become a plain 10-digit mobile.
+const normalizeMobile = (value) => {
+  let digits = String(value ?? '').replace(/\D/g, '');
+  if (digits.length > 10 && digits.startsWith('91')) digits = digits.slice(2);
+  if (digits.length > 10 && digits.startsWith('0')) digits = digits.slice(1);
+  return digits.slice(0, 10);
+};
+
 export default function UserManagement() {
   const location = useLocation();
   
@@ -45,10 +54,8 @@ export default function UserManagement() {
 
   const [formData, setFormData] = useState({
     name: '',
-    username: '',
     mobile: '',
     email: '', 
-    password: '', 
     role: '',
     department: '',
     designation: '',
@@ -120,7 +127,7 @@ export default function UserManagement() {
 
     setFormData(prev => ({
       ...prev,
-      [name]: value
+      [name]: name === 'mobile' ? normalizeMobile(value) : value
     }));
   };
 
@@ -153,15 +160,10 @@ export default function UserManagement() {
 
   const validateForm = (checkingUpdate = false) => {
     if (
-      !formData.name || !formData.username || !formData.mobile || !formData.email ||
+      !formData.name || !formData.mobile || !formData.email ||
       !formData.role || !formData.department || !formData.designation || !formData.branch || !formData.status
     ) {
       showToast('All fields are strictly required. Please fill in the missing blocks.', 'warning');
-      return false;
-    }
-
-    if (!checkingUpdate && !formData.password) {
-      showToast('Account Password is required for registering new credentials.', 'warning');
       return false;
     }
 
@@ -190,10 +192,8 @@ export default function UserManagement() {
 
     setFormData({
       name: user.name || '',
-      username: user.username || '',
-      mobile: user.mobile || '',
+      mobile: normalizeMobile(user.mobile),
       email: user.email || '',
-      password: '', 
       role: user.role || '',
       department: user.department || '',
       designation: user.designation || '',
@@ -233,9 +233,15 @@ export default function UserManagement() {
         return; 
       }
 
+      // Login is by email OTP now, so nobody types this password. Supabase
+      // signUp still needs one, so a random value is generated and discarded.
+      const randomPassword = Array.from(crypto.getRandomValues(new Uint8Array(24)))
+        .map((b) => b.toString(16).padStart(2, '0'))
+        .join('');
+
       const { data: authData, error: authError } = await supabase.auth.signUp({
         email: formData.email,
-        password: formData.password,
+        password: randomPassword,
         options: { emailRedirectTo: window.location.origin }
       });
 
@@ -248,7 +254,7 @@ export default function UserManagement() {
           {
             auth_user_id: userId, 
             name: formData.name,
-            username: formData.username,
+            username: formData.name,
             mobile: formData.mobile,
             email: formData.email, 
             role: formData.role,
@@ -292,29 +298,13 @@ export default function UserManagement() {
 
         if (emailError) throw emailError;
         if (emailData?.error) throw new Error(emailData.error);
-
-        if (formData.password && formData.password.trim() !== '') {
-          const { data: passData, error: passError } = await supabase.functions.invoke(
-            'hyper-api',
-            {
-              body: {
-                action: 'UPDATE_PASSWORD',
-                authUserId: selectedAuthUserId,
-                password: formData.password,
-              },
-            }
-          );
-
-          if (passError) throw passError;
-          if (passData?.error) throw new Error(passData.error);
-        }
       }
 
       const { error } = await supabase
         .from('users_profile')
         .update({
           name: formData.name,
-          username: formData.username,
+          username: formData.name,
           mobile: formData.mobile,
           email: formData.email,
           role: formData.role,
@@ -404,10 +394,8 @@ export default function UserManagement() {
   const closeFormModal = () => {
     setFormData({
       name: '',
-      username: '',
       mobile: '',
       email: '',
-      password: '',
       role: '',
       department: '',
       designation: '',
@@ -454,7 +442,7 @@ export default function UserManagement() {
                 onClick={() => { 
                   setIsEditMode(false); 
                   setFormData({
-                    name: '', username: '', mobile: '', email: '', password: '', role: '',
+                    name: '', mobile: '', email: '', role: '',
                     department: '', designation: '', branch: '', status: 'active',
                     allowed_permissions: ['dashboard']
                   });
@@ -500,7 +488,6 @@ export default function UserManagement() {
                     <tr style={{ borderBottom: '2px solid #e9e1d2', color: '#6f6457', fontWeight: 600 }}>
                       <th style={{ padding: '10px' }}>ID</th>
                       <th style={{ padding: '10px' }}>Name</th>
-                      <th style={{ padding: '10px' }}>Username</th>
                       <th style={{ padding: '10px' }}>Mobile</th>
                       <th style={{ padding: '10px' }}>Role</th>
                       <th style={{ padding: '10px' }}>Branch</th>
@@ -534,7 +521,6 @@ export default function UserManagement() {
                         <tr key={user.id} style={{ borderBottom: '1px solid #e9e1d2' }}>
                           <td style={{ padding: '12px 10px', color: '#6f6457' }}>{user.id}</td>
                           <td style={{ padding: '12px 10px', fontWeight: 500 }}>{user.name || '—'}</td>
-                          <td style={{ padding: '12px 10px' }}>{user.username || '—'}</td>
                           <td style={{ padding: '12px 10px' }}>{user.mobile || '—'}</td>
                           <td style={{ padding: '12px 10px' }}>
                             <span style={{ 
@@ -612,20 +598,8 @@ export default function UserManagement() {
               
               <div className="form-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', marginBottom: '20px' }}>
                 <input className="inp" name="name" placeholder="Name" value={formData.name} onChange={handleChange} disabled={loading} />
-                <input className="inp" name="username" placeholder="Username" value={formData.username} onChange={handleChange} disabled={loading} />
                 <input className="inp" name="mobile" placeholder="Mobile (10 digits)" value={formData.mobile} onChange={handleChange} disabled={loading} />
-                <input className="inp" name="email" type="email" placeholder="Email (@gmail or @duroply)" value={formData.email} onChange={handleChange} disabled={loading} />
-                
-                <input 
-                  className="inp" 
-                  name="password" 
-                  type="password" 
-                  placeholder={isEditMode ? "New Password (leave blank to keep)" : "Account Password"} 
-                  value={formData.password} 
-                  onChange={handleChange} 
-                  disabled={loading} 
-                  style={{ gridColumn: 'span 2' }} 
-                />
+                <input className="inp" name="email" type="email" placeholder="Email (@gmail or @duroply) · login OTP goes here" value={formData.email} onChange={handleChange} disabled={loading} style={{ gridColumn: 'span 2' }} />
 
                 <select className="inp" name="role" value={formData.role} onChange={handleChange} disabled={loading}>
                   <option value="">Select Role</option>

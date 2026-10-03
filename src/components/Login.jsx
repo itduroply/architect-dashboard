@@ -1,19 +1,21 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supbase'; // Ensure this points to your actual supabase client path
+import { launcherSupabase } from '../lib/launcherSupabase';
 
 export default function Login() {
   // State for form fields
-  const [username, setUsername] = useState('');
-  const [password, setPassword] = useState('');
-  const [showPassword, setShowPassword] = useState(false);
+  const [email, setEmail] = useState('');
+  const [otp, setOtp] = useState('');
+  const [otpSent, setOtpSent] = useState(false);
+  const [resendIn, setResendIn] = useState(0);
   const [loading, setLoading] = useState(false);
 
   // Modern Snackbar Toast States
   const [toast, setToast] = useState({ show: false, message: '', type: 'error' });
 
   // Refs for managing focus transitions
-  const passwordInputRef = useRef(null);
+  const otpInputRef = useRef(null);
   const navigate = useNavigate();
 
   // Helper trigger to show the snackbar alerts
@@ -31,103 +33,164 @@ export default function Login() {
     }
   }, [toast.show]);
 
-  // Toggle password visibility
-  const togglePwVis = () => {
-    setShowPassword((prev) => !prev);
+  // Countdown before "Resend OTP" is allowed again
+  useEffect(() => {
+    if (resendIn <= 0) return;
+    const timer = setTimeout(() => setResendIn((sec) => sec - 1), 1000);
+    return () => clearTimeout(timer);
+  }, [resendIn]);
+
+  // Looks up the profile by email and blocks missing / inactive accounts
+  const findActiveProfile = async (cleanEmail) => {
+    const { data: publicUser, error: publicFetchError } = await supabase
+      .from('users_profile')
+      .select('id, username, email, auth_user_id, status, role')
+      .ilike('email', cleanEmail)
+      .maybeSingle();
+
+    if (publicFetchError) throw publicFetchError;
+
+    if (!publicUser) {
+      showNotification('No account is registered with this email.', 'error');
+      return null;
+    }
+
+    if (publicUser.status === 'inactive') {
+      showNotification('Your profile has been deactivated. Contact administration support.', 'error');
+      return null;
+    }
+
+    return publicUser;
   };
 
-  // Live Supabase Login Logic
-  const doLogin = async () => {
-    // 1. Validation Fail State: Empty Inputs
-    if (!username.trim() && !password) {
-      showNotification('Please enter your credentials to access the system.', 'error');
+  // STEP 1: Send a one-time code to the registered email.
+  // The App Launcher project sends it, using its own email setup.
+  const sendOtp = async () => {
+    const cleanEmail = email.trim().toLowerCase();
+    if (!cleanEmail) {
+      showNotification('Email field cannot be left blank.', 'error');
       return;
     }
-    if (!username.trim()) {
-      showNotification('Username field cannot be left blank.', 'error');
-      return;
-    }
-    if (!password) {
-      showNotification('Password field cannot be left blank.', 'error');
+    if (!launcherSupabase) {
+      showNotification('Launcher login is not configured. Contact administration support.', 'error');
       return;
     }
 
     setLoading(true);
-
     try {
-      console.log('--- LOGIN DEBUG START ---');
+      const publicUser = await findActiveProfile(cleanEmail);
+      if (!publicUser) return;
 
-     const { data: publicUser, error: publicFetchError } = await supabase
-  .from('users_profile')
-  .select('id, username, email, auth_user_id, status, role')
-
-  .ilike('username', username.trim())
-  .maybeSingle();
-
-if (publicFetchError) throw publicFetchError;
-
-      // 2. Validation Fail State: Username completely missing from DB
-      if (!publicUser) {
-        showNotification('Invalid username or password configuration.', 'error');
-        setLoading(false);
-        return;
-      }
-
-      // 3. Validation Fail State: Account explicitly locked by Administrator
-      if (publicUser.status === 'inactive') {
-        showNotification('Your profile has been deactivated. Contact administration support.', 'error');
-        setLoading(false);
-        return;
-      }
-
-      // STEP 2: Authenticate securely against the Supabase Auth engine
-      const { error: authSignInError } = await supabase.auth.signInWithPassword({
+      const { error: otpError } = await launcherSupabase.auth.signInWithOtp({
         email: publicUser.email,
-        password: password
+        options: { shouldCreateUser: false },
       });
 
-      // 4. Validation Fail State: Wrong password or structural auth mismatch
-      if (authSignInError) {
-        if (authSignInError.message.includes('Invalid login credentials')) {
-          showNotification('Invalid username or password configuration.', 'error');
-        } else {
-          showNotification(authSignInError.message, 'error');
-        }
-        setLoading(false);
+      if (otpError) {
+        showNotification(otpError.message, 'error');
         return;
       }
 
-      // SUCCESS: Notify user and track metadata configuration matrices
-      showNotification('Authentication successful! Initializing workspace...', 'success');
-      
-      localStorage.setItem('user_role', publicUser.role);
-      localStorage.setItem('public_user_id', publicUser.id);
-      localStorage.setItem('auth_uid', publicUser.auth_user_id);
-
-      // Delay briefly so the user can actually appreciate the crisp success animation
-      setTimeout(() => {
-        navigate('/app/dashboard');
-      }, 800);
-
+      setOtpSent(true);
+      setOtp('');
+      setResendIn(60);
+      showNotification(`OTP sent to ${publicUser.email}`, 'success');
+      setTimeout(() => otpInputRef.current?.focus(), 50);
     } catch (err) {
       console.error(err);
       showNotification(`System fault detected: ${err.message}`, 'error');
     } finally {
-      console.log('--- LOGIN DEBUG END ---');
       setLoading(false);
     }
   };
 
-  // Keyboard navigation handlers
-  const handleUsernameKeyDown = (e) => {
-    if (e.key === 'Enter') {
-      passwordInputRef.current?.focus();
+  // STEP 2: Verify the code with the Launcher, then open the session here
+  const verifyOtp = async () => {
+    const cleanEmail = email.trim().toLowerCase();
+    const code = otp.trim();
+    if (!/^\d{6,10}$/.test(code)) {
+      showNotification('Enter the OTP sent to your email.', 'error');
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const publicUser = await findActiveProfile(cleanEmail);
+      if (!publicUser) return;
+
+      // 2a. Check the code with the App Launcher (login is recorded there)
+      const { data: launcherData, error: verifyError } = await launcherSupabase.auth.verifyOtp({
+        email: publicUser.email,
+        token: code,
+        type: 'email',
+      });
+
+      if (verifyError || !launcherData?.session) {
+        showNotification('Invalid or expired OTP. Please try again.', 'error');
+        return;
+      }
+
+      // 2b. Swap the Launcher sign-in for a session in this project
+      const { data: exchange, error: exchangeError } = await supabase.functions.invoke('launcher-login', {
+        body: { launcherAccessToken: launcherData.session.access_token },
+      });
+
+      // Local scope only: never revoke the user's Launcher session elsewhere
+      await launcherSupabase.auth.signOut({ scope: 'local' }).catch(() => {});
+
+      if (exchangeError || exchange?.error || !exchange?.token_hash) {
+        let message = exchange?.error;
+        if (!message && exchangeError?.context?.json) {
+          const body = await exchangeError.context.json().catch(() => null);
+          message = body?.error;
+        }
+        showNotification(message || 'Could not open your session. Please try again.', 'error');
+        return;
+      }
+
+      const { error: sessionError } = await supabase.auth.verifyOtp({
+        token_hash: exchange.token_hash,
+        type: 'magiclink',
+      });
+
+      if (sessionError) {
+        showNotification('Could not open your session. Please try again.', 'error');
+        return;
+      }
+
+      showNotification('Authentication successful! Initializing workspace...', 'success');
+
+      localStorage.setItem('user_role', publicUser.role);
+      localStorage.setItem('public_user_id', publicUser.id);
+      localStorage.setItem('auth_uid', publicUser.auth_user_id);
+
+      setTimeout(() => {
+        navigate('/app/dashboard');
+      }, 800);
+    } catch (err) {
+      console.error(err);
+      showNotification(`System fault detected: ${err.message}`, 'error');
+    } finally {
+      setLoading(false);
     }
   };
 
-  const handlePasswordKeyDown = (e) => {
+  const changeEmail = () => {
+    setOtpSent(false);
+    setOtp('');
+    setResendIn(0);
+  };
+
+  // Keyboard navigation handlers
+  const handleEmailKeyDown = (e) => {
+    if (e.key === 'Enter' && !otpSent) {
+      sendOtp();
+    }
+  };
+
+  const handleOtpKeyDown = (e) => {
     if (e.key === 'Enter') {
-      doLogin();
+      verifyOtp();
     }
   };
 
@@ -220,66 +283,67 @@ if (publicFetchError) throw publicFetchError;
           <h2>Welcome back</h2>
           <p>Sign in to access your loyalty program</p>
 
-          {/* Username Input */}
+          {/* Email Input */}
           <div className="fg">
-            <label className="lbl" htmlFor="lUser">Username</label>
+            <label className="lbl" htmlFor="lEmail">Email</label>
             <input
               className="inp"
-              id="lUser"
-              type="text"
-              placeholder="Enter your username"
-              autoComplete="username"
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-              onKeyDown={handleUsernameKeyDown}
-              disabled={loading}
+              id="lEmail"
+              type="email"
+              placeholder="Enter your registered email"
+              autoComplete="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              onKeyDown={handleEmailKeyDown}
+              disabled={loading || otpSent}
             />
           </div>
 
-          {/* Password Input */}
-          <div className="fg">
-            <label className="lbl" htmlFor="lPass">Password</label>
-            <div style={{ position: 'relative' }}>
+          {/* OTP Input */}
+          {otpSent && (
+            <div className="fg">
+              <label className="lbl" htmlFor="lOtp">OTP</label>
               <input
                 className="inp"
-                id="lPass"
-                type={showPassword ? 'text' : 'password'}
-                placeholder="Enter your password"
-                autoComplete="current-password"
-                style={{ paddingRight: '44px' }}
-                ref={passwordInputRef}
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                onKeyDown={handlePasswordKeyDown}
+                id="lOtp"
+                type="text"
+                inputMode="numeric"
+                maxLength={10}
+                placeholder="Enter OTP"
+                autoComplete="one-time-code"
+                style={{ letterSpacing: '.3em' }}
+                ref={otpInputRef}
+                value={otp}
+                onChange={(e) => setOtp(e.target.value.replace(/\D/g, '').slice(0, 10))}
+                onKeyDown={handleOtpKeyDown}
                 disabled={loading}
               />
-              <button
-                type="button"
-                onClick={togglePwVis}
-                style={{
-                  position: 'absolute',
-                  right: '12px',
-                  top: '50%',
-                  transform: 'translateY(-50%)',
-                  background: 'none',
-                  border: 'none',
-                  cursor: 'pointer',
-                  color: '#b0a888',
-                  fontSize: '15px',
-                  lineHeight: 1
-                }}
-                id="pwVisBtn"
-                title="Show/hide password"
-                disabled={loading}
-              >
-                {showPassword ? '🙈' : '👁'}
-              </button>
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '8px', fontSize: '12px' }}>
+                <button
+                  type="button"
+                  onClick={changeEmail}
+                  disabled={loading}
+                  style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', color: '#b0a888' }}
+                >
+                  &larr; Change email
+                </button>
+                <button
+                  type="button"
+                  onClick={sendOtp}
+                  disabled={loading || resendIn > 0}
+                  style={{ background: 'none', border: 'none', padding: 0, cursor: resendIn > 0 ? 'default' : 'pointer', color: '#b0a888' }}
+                >
+                  {resendIn > 0 ? `Resend OTP in ${resendIn}s` : 'Resend OTP'}
+                </button>
+              </div>
             </div>
-          </div>
+          )}
 
           {/* Submit Button */}
-          <button className="btn-login" id="loginBtn" onClick={doLogin} disabled={loading}>
-            {loading ? 'Authenticating System...' : 'Sign In \u00a0\u2192'}
+          <button className="btn-login" id="loginBtn" onClick={otpSent ? verifyOtp : sendOtp} disabled={loading}>
+            {loading
+              ? (otpSent ? 'Verifying OTP...' : 'Sending OTP...')
+              : (otpSent ? 'Verify & Sign In \u00a0\u2192' : 'Send OTP \u00a0\u2192')}
           </button>
 
           <div className="login-divider"></div>

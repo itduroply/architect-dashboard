@@ -699,14 +699,18 @@ const ArchitectAccounts = () => {
         });
       });
 
+      // Marking an architect eligible updates all of their ledger rows, but
+      // claims uploaded later arrive without that status. So one 'eligible'
+      // row is enough to keep the architect eligible; otherwise the newest
+      // claim would flip them back to blocked until "All Eligible" is re-run.
       const serverStatusMap = {};
       ledgerData.forEach(row => {
         const name = row.architect_name || row.architectName || '';
         const archId = extractArchitectId(name);
-        const currentStatus = row.status || row.eligibilityStatus;
+        const currentStatus = String(row.status || row.eligibilityStatus || '').toLowerCase();
 
-        if (currentStatus && archId) {
-          serverStatusMap[archId] = currentStatus?.toLowerCase();
+        if (currentStatus && archId && serverStatusMap[archId] !== 'eligible') {
+          serverStatusMap[archId] = currentStatus;
         }
       });
       
@@ -907,10 +911,17 @@ const ArchitectAccounts = () => {
     setModal({ show: false, targetStatus: null, displayLabel: '' });
     showToast('⏳ Performing batch database updates...', 'loading', false);
 
-    const updatedMap = {};
+    // With a branch selected, only architects who have claims in that branch
+    // are updated. Eligibility is per architect, so all of their rows change.
+    const selectedBranch = filters.branch;
+    const targetArchitects = selectedBranch
+      ? architectsList.filter(row => (row.branches || []).some(branch => branch.toLowerCase() === selectedBranch.toLowerCase()))
+      : architectsList;
+
+    const updatedMap = selectedBranch ? { ...eligibilityMap } : {};
     const globalNamesArray = [];
 
-    architectsList.forEach((row) => {
+    targetArchitects.forEach((row) => {
       updatedMap[row.uniqueKey] = stringLabel;
       row.associatedNames.forEach(name => {
         globalNamesArray.push(name);
@@ -930,10 +941,17 @@ const ArchitectAccounts = () => {
 
       await logTelemetry(
         traceActionTag, 
-        `${operatorName} set all profiles (${architectsList.length} unique codes) to ${stringLabel} via unified text prefix mapping.`
+        selectedBranch
+          ? `${operatorName} set ${targetArchitects.length} unique codes in branch '${selectedBranch}' to ${stringLabel} via unified text prefix mapping.`
+          : `${operatorName} set all profiles (${architectsList.length} unique codes) to ${stringLabel} via unified text prefix mapping.`
       );
       await fetchLedgerData();
-      showToast(`✅ Mass assigned all matching records to ${stringLabel}!`, 'success');
+      showToast(
+        selectedBranch
+          ? `✅ ${targetArchitects.length} architects of ${selectedBranch} marked ${stringLabel}!`
+          : `✅ Mass assigned all matching records to ${stringLabel}!`,
+        'success'
+      );
     } catch (err) {
       console.error('Failed executing backend ledger update batch operation:', err.message);
       showToast(`❌ Bulk operation failed: ${err.message}`, 'error');
@@ -1207,6 +1225,9 @@ const ArchitectAccounts = () => {
             <p style={{ margin: '0 0 20px 0', fontSize: '13.5px', color: '#4b5563', lineHeight: '1.5' }}>
               Are you sure you want to change the active setup profiles?
               This action will overwrite the status column to <strong style={{ color: modal.targetStatus === 'yes' ? '#d97706' : '#dc2626' }}>{modal.displayLabel}</strong> based on matching name prefixes across the remote database ledger.
+              {filters.branch && (
+                <> Only architects of branch <strong>{filters.branch}</strong> will be updated.</>
+              )}
             </p>
 
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px' }}>
@@ -1356,7 +1377,7 @@ const ArchitectAccounts = () => {
                             <tr style={{ background: '#f8fafc' }}>
                               <th style={{ textAlign: 'left', padding: '10px 18px', fontSize: '11px', fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: '.04em' }}>Product SKU</th>
                               <th style={{ textAlign: 'right', padding: '10px 18px', fontSize: '11px', fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: '.04em' }}>Eligible Sheets</th>
-                              <th style={{ textAlign: 'right', padding: '10px 18px', fontSize: '11px', fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: '.04em' }}>Approved Date</th>
+                              <th style={{ textAlign: 'right', padding: '10px 18px', fontSize: '11px', fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: '.04em' }}>Last Approved Date</th>
                               <th style={{ textAlign: 'right', padding: '10px 18px', fontSize: '11px', fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: '.04em' }}>Unit Price</th>
                               <th style={{ textAlign: 'right', padding: '10px 18px', fontSize: '11px', fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: '.04em' }}>Total Payout</th>
                               <th style={{ width: '1%' }}></th>
@@ -1884,10 +1905,10 @@ const ArchitectAccounts = () => {
           </div>
           <div style={{ display: 'flex', gap: '8px' }}>
             <button className="btn btn-gold" onClick={() => triggerBulkConfirmationModal('yes')} style={{ fontSize: '12px', background: '#d97706', color: '#fff', border: 'none', padding: '6px 12px', borderRadius: '4px', cursor: 'pointer', fontWeight: 500 }}>
-               ✅ Database All Eligible
+               ✅ {filters.branch ? `${filters.branch} All Eligible` : 'Database All Eligible'}
             </button>
             <button className="btn btn-red" onClick={() => triggerBulkConfirmationModal('no')} style={{ fontSize: '12px', background: '#dc2626', color: '#fff', border: 'none', padding: '6px 12px', borderRadius: '4px', cursor: 'pointer', fontWeight: 500 }}>
-              ❌ Database All Ineligible
+              ❌ {filters.branch ? `${filters.branch} All Ineligible` : 'Database All Ineligible'}
             </button>
           </div>
         </div>
