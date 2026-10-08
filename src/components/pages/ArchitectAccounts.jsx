@@ -72,6 +72,7 @@ const ArchitectAccounts = () => {
     transferQty: '',
     reconversionReason: '',
     sourceClaimNo: '',
+    sourceLeadId: '',
   });
 
   // A converted Nature's Signature target may be converted again only after a
@@ -82,6 +83,7 @@ const ArchitectAccounts = () => {
     maxQty: 0,
     reason: '',
     sourceClaimNo: '',
+    sourceLeadId: '',
   });
 
   // Searchable Dropdown State for Target SKU
@@ -431,7 +433,9 @@ const ArchitectAccounts = () => {
 
   // sourceClaimNo pins the conversion to one ledger row. Every conversion is
   // stored as its own row, so a reconversion must draw from that row only.
-  const openTransferModal = (sourceSku, maxQty, reconversionReason = '', sourceClaimNo = '') => {
+  // sourceLeadId pins it to the lead the user clicked: the same SKU can sit on
+  // several leads, and a first conversion has no claim number to pin to.
+  const openTransferModal = (sourceSku, maxQty, reconversionReason = '', sourceClaimNo = '', sourceLeadId = '') => {
     setTransferState({
       show: true,
       loading: false,
@@ -441,6 +445,7 @@ const ArchitectAccounts = () => {
       transferQty: maxQty.toString(),
       reconversionReason,
       sourceClaimNo,
+      sourceLeadId,
     });
     // Conversion offers only 7% and 10% for every architect; 7% is the default.
     setConversionTab('7%');
@@ -505,10 +510,23 @@ const ArchitectAccounts = () => {
 
       if (fetchError) throw fetchError;
 
-      const matchingRows = (allRows || []).filter(row =>
-        superNormalize(row.product_sku) === sourceSkuNormalized &&
-        (!transferState.sourceClaimNo || row.claim_no === transferState.sourceClaimNo)
-      );
+      // Only rows of the clicked lead that still hold sheets. Without the lead
+      // filter, the first matching row of any lead was used, so the converted
+      // row landed on another lead and sheets were deducted from there. Rows
+      // already at 0 are conversion markers and must not act as the template.
+      const matchingRows = (allRows || [])
+        .filter(row =>
+          superNormalize(row.product_sku) === sourceSkuNormalized &&
+          (!transferState.sourceClaimNo || row.claim_no === transferState.sourceClaimNo) &&
+          (!transferState.sourceLeadId || String(row.lead_id || '').trim() === transferState.sourceLeadId) &&
+          parseFloat(row.total_eligible_sheets || 0) > 0
+        )
+        .sort((a, b) => String(a.claim_no || '').localeCompare(String(b.claim_no || '')));
+
+      const availableSheets = matchingRows.reduce((sum, row) => sum + parseFloat(row.total_eligible_sheets || 0), 0);
+      if (qtyToTransfer > availableSheets) {
+        throw new Error(`Only ${availableSheets} sheets are available on this lead. Please refresh and try again.`);
+      }
 
       if (matchingRows.length === 0) {
         throw new Error("No matching source product SKU records found for this architect.");
@@ -526,7 +544,11 @@ const ArchitectAccounts = () => {
         const rootClaimNo = claimParts[0]; 
         const currentSuffix = claimParts[1] || "1";
 
-        const isNaturesSig = sourceIsNaturesSignature;
+        // A conversion target such as a Masterpiece SKU has no "Nature
+        // Signature" in its name, but its reconversion follows the same claim
+        // numbering.
+        const isNaturesSig = sourceIsNaturesSignature ||
+          templateRow.payout_status === 'Converted Nature Signature Target';
 
         if (isNaturesSig) {
           const targetBasePattern = `${rootClaimNo}-${currentSuffix}-1`;
@@ -1389,7 +1411,10 @@ const ArchitectAccounts = () => {
 
                               // Nature's Signature keeps the original Convert/Reconvert card exactly as
                               // it worked before — same Lead ID/DGO/Mob/Sheets badges and button, unchanged.
-                              if (isNaturesSignature) {
+                              // A converted row keeps this card even when its target SKU (for
+                              // example Masterpiece) has no Nature Signature in its name, so it
+                              // can still be reconverted.
+                              if (isNaturesSignature || product.isConverted) {
                                 return (
                                   <tr key={product.key} style={{ borderTop: '1px solid #f1f5f9' }}>
                                     <td colSpan={6} style={{ padding: '12px 18px' }}>
@@ -1456,10 +1481,10 @@ const ArchitectAccounts = () => {
                                         <button
                                           onClick={() => {
                                             if (product.isConverted) {
-                                              setReconversionModal({ show: true, sourceSku: product.sku, maxQty: product.sheets, reason: '', sourceClaimNo: product.claimNo });
+                                              setReconversionModal({ show: true, sourceSku: product.sku, maxQty: product.sheets, reason: '', sourceClaimNo: product.claimNo, sourceLeadId: lead.leadId });
                                               return;
                                             }
-                                            openTransferModal(product.sku, product.sheets, '', product.claimNo);
+                                            openTransferModal(product.sku, product.sheets, '', product.claimNo, lead.leadId);
                                           }}
                                           style={{
                                             background: product.isConverted ? '#d97706' : '#0284c7', color: '#ffffff', border: 'none',
@@ -1520,14 +1545,14 @@ const ArchitectAccounts = () => {
               style={{ width: '100%', boxSizing: 'border-box', resize: 'vertical', border: '1px solid #cbd5e1', borderRadius: '8px', padding: '10px', fontSize: '13px', outline: 'none' }}
             />
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '18px' }}>
-              <button onClick={() => setReconversionModal({ show: false, sourceSku: '', maxQty: 0, reason: '', sourceClaimNo: '' })} style={{ border: '1px solid #cbd5e1', background: '#ffffff', color: '#475569', borderRadius: '7px', padding: '9px 14px', cursor: 'pointer', fontWeight: 600 }}>
+              <button onClick={() => setReconversionModal({ show: false, sourceSku: '', maxQty: 0, reason: '', sourceClaimNo: '', sourceLeadId: '' })} style={{ border: '1px solid #cbd5e1', background: '#ffffff', color: '#475569', borderRadius: '7px', padding: '9px 14px', cursor: 'pointer', fontWeight: 600 }}>
                 Cancel
               </button>
               <button
                 disabled={!reconversionModal.reason.trim()}
                 onClick={() => {
-                  openTransferModal(reconversionModal.sourceSku, reconversionModal.maxQty, reconversionModal.reason.trim(), reconversionModal.sourceClaimNo);
-                  setReconversionModal({ show: false, sourceSku: '', maxQty: 0, reason: '', sourceClaimNo: '' });
+                  openTransferModal(reconversionModal.sourceSku, reconversionModal.maxQty, reconversionModal.reason.trim(), reconversionModal.sourceClaimNo, reconversionModal.sourceLeadId);
+                  setReconversionModal({ show: false, sourceSku: '', maxQty: 0, reason: '', sourceClaimNo: '', sourceLeadId: '' });
                 }}
                 style={{ border: 'none', background: reconversionModal.reason.trim() ? '#d97706' : '#cbd5e1', color: '#ffffff', borderRadius: '7px', padding: '9px 14px', cursor: reconversionModal.reason.trim() ? 'pointer' : 'not-allowed', fontWeight: 600 }}
               >
