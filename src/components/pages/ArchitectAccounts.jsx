@@ -1038,6 +1038,49 @@ const ArchitectAccounts = () => {
       result[key]['Total Product Payout'] += Number(ledgerRow.total_payout_amount || ledgerRow.payoutAmount || ledgerRow.amount || 0);
       return result;
     }, {});
+    // One row per architect + lead + SKU, so the export shows which product
+    // was sold against which lead. Uses the same filters as productSummary.
+    const leadProductSummary = rawLedgerData.reduce((result, ledgerRow) => {
+      const architectId = extractArchitectId(ledgerRow.architect_name || ledgerRow.architectName);
+      const architect = selectedArchitectsById.get(architectId);
+      const sheets = Number(ledgerRow.total_eligible_sheets || ledgerRow.totalSheets || 0);
+      if (!architect || sheets === 0) return result;
+      const ledgerBranch = String(ledgerRow.branch_name || '').trim() || 'Unmapped Branch';
+      if (filters.branch && ledgerBranch !== filters.branch) return result;
+      if (filters.startDate || filters.endDate) {
+        const claimDate = toLocalDate(ledgerRow.claim_date);
+        if (!claimDate) return result;
+        if (filters.startDate && claimDate < toLocalDate(filters.startDate)) return result;
+        if (filters.endDate && claimDate > toLocalDate(filters.endDate)) return result;
+      }
+
+      const leadId = String(ledgerRow.lead_id || '').trim() || '—';
+      const sku = ledgerRow.product_sku || 'UNKNOWN';
+      const key = `${architectId}__${leadId}__${sku}`;
+      if (!result[key]) {
+        result[key] = {
+          'Architect Name': getArchitectDisplayName(architect.architect_name),
+          'Account Number': architect.architect_id,
+          'Lead ID': leadId,
+          Branch: ledgerBranch,
+          'Product Category': getProductCategory(sku),
+          'Product SKU': sku,
+          Sheets: 0,
+          Payout: 0,
+          'Eligibility Status': architect.isEligible ? 'Eligible' : 'Ineligible',
+        };
+      }
+      result[key].Sheets += sheets;
+      result[key].Payout += Number(ledgerRow.total_payout_amount || ledgerRow.payoutAmount || ledgerRow.amount || 0);
+      return result;
+    }, {});
+    const leadProductRows = Object.values(leadProductSummary)
+      .sort((a, b) =>
+        a['Architect Name'].localeCompare(b['Architect Name']) ||
+        a['Lead ID'].localeCompare(b['Lead ID']) ||
+        a['Product SKU'].localeCompare(b['Product SKU']))
+      .map(row => ({ ...row, Sheets: Number(row.Sheets.toFixed(1)), Payout: Number(row.Payout.toFixed(1)) }));
+
     const productRows = Object.values(productSummary)
       .sort((a, b) => a['Architect Name'].localeCompare(b['Architect Name']) || a['Product SKU'].localeCompare(b['Product SKU']));
 
@@ -1074,6 +1117,17 @@ const ArchitectAccounts = () => {
     summarySheet['!freeze'] = { xSplit: 0, ySplit: 1 };
     summarySheet['!cols'] = [{ wch: 8 }, { wch: 30 }, { wch: 18 }, { wch: 18 }, { wch: 35 }, { wch: 12 }, { wch: 16 }, { wch: 14 }, { wch: 20 }, { wch: 16 }, { wch: 20 }, { wch: 55 }];
     XLSX.utils.book_append_sheet(workbook, summarySheet, 'Architect Accounts');
+
+    // Two blank rows between architects so each architect's block is easy to see.
+    const leadProductRowsWithGaps = leadProductRows.flatMap((row, index) => {
+      const previous = leadProductRows[index - 1];
+      return previous && previous['Account Number'] !== row['Account Number'] ? [{}, {}, row] : [row];
+    });
+    const leadProductSheet = XLSX.utils.json_to_sheet(leadProductRowsWithGaps, { header: Object.keys(leadProductRows[0] || {}) });
+    leadProductSheet['!autofilter'] = { ref: leadProductSheet['!ref'] || 'A1' };
+    leadProductSheet['!freeze'] = { xSplit: 0, ySplit: 1 };
+    leadProductSheet['!cols'] = [{ wch: 30 }, { wch: 18 }, { wch: 16 }, { wch: 20 }, { wch: 18 }, { wch: 32 }, { wch: 10 }, { wch: 12 }, { wch: 18 }];
+    XLSX.utils.book_append_sheet(workbook, leadProductSheet, 'Lead-wise Products');
     XLSX.writeFile(workbook, `Architect_Accounts_Report_${new Date().toISOString().slice(0, 10)}.xlsx`);
 
     logTelemetry('EXPORT_EXCEL_REPORT', `Exported ${summaryRows.length} filtered architect account rows with product details.`);
