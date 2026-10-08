@@ -93,6 +93,8 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true);
   // null means "not fetched yet", distinct from an empty ledger.
   const [rawLedgerRows, setRawLedgerRows] = useState(null);
+  // Lead IDs that are still linked to an architect in the Lead Master.
+  const [linkedLeadIds, setLinkedLeadIds] = useState(new Set());
   const [architectsList, setArchitectsList] = useState([]);
   const [categoryBusinessData, setCategoryBusinessData] = useState([]);
   const [skuBusinessData, setSkuBusinessData] = useState([]);
@@ -131,6 +133,31 @@ export default function DashboardPage() {
         if (!pageData || pageData.length < pageSize) break;
       }
 
+      // The ledger is written once per claim and never refreshed, so a lead
+      // whose architect was later removed in the Lead Master still has its
+      // sheets here. Same check as Architect Accounts: count only rows whose
+      // lead is still linked to an architect, so both pages show one total.
+      const ledgerLeadIds = [...new Set(
+        ledger.map(row => String(row.lead_id || '').trim()).filter(Boolean)
+      )];
+      const leadIdChunks = [];
+      for (let i = 0; i < ledgerLeadIds.length; i += 200) {
+        leadIdChunks.push(ledgerLeadIds.slice(i, i + 200));
+      }
+      const leadChunkResults = await Promise.all(leadIdChunks.map(chunk =>
+        supabase.from('leads_master').select('lead_id, linked_architect').in('lead_id', chunk)
+      ));
+      const linked = new Set();
+      leadChunkResults.forEach(({ data: leadRows, error: leadError }) => {
+        if (leadError) throw leadError;
+        (leadRows || []).forEach(lead => {
+          if (lead.linked_architect && String(lead.linked_architect).trim()) {
+            linked.add(String(lead.lead_id || '').trim());
+          }
+        });
+      });
+
+      setLinkedLeadIds(linked);
       setRawLedgerRows(ledger);
     } catch (err) {
       console.error('Ledger Fetch Error:', err.message);
@@ -155,6 +182,7 @@ export default function DashboardPage() {
       // filter Architect Accounts applies before aggregating.
       const dataRows = rawLedgerRows.filter((row) => {
         if (Number(row.total_eligible_sheets || row.totalSheets || row.sheets || 0) <= 0) return false;
+        if (!linkedLeadIds.has(String(row.lead_id || '').trim())) return false;
         if (start || end) {
           const claimDate = toLocalDate(row.claim_date);
           if (!claimDate) return false;
@@ -304,7 +332,7 @@ export default function DashboardPage() {
     } finally {
       setLoading(false);
     }
-  }, [rawLedgerRows, startDate, endDate]);
+  }, [rawLedgerRows, linkedLeadIds, startDate, endDate]);
 
   useEffect(() => {
     syncDashboardMetrics();

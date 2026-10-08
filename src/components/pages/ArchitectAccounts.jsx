@@ -36,6 +36,10 @@ const ArchitectAccounts = () => {
   const [rawLedgerData, setRawLedgerData] = useState([]);
   const [rawRemittanceData, setRawRemittanceData] = useState([]);
   const [architectsList, setArchitectsList] = useState([]);
+  // 'active' shows eligible architects, 'blocked' shows blocked ones. Bulk
+  // eligibility buttons act only on the open tab, so "All Eligible" on the
+  // Active tab never unblocks a blocked architect.
+  const [accountTab, setAccountTab] = useState('active');
   const [decorativeMasterList, setDecorativeMasterList] = useState([]);
 
   // Conversion Percentage Tab State ('7%' Payout, '10%' Payout)
@@ -933,14 +937,17 @@ const ArchitectAccounts = () => {
     setModal({ show: false, targetStatus: null, displayLabel: '' });
     showToast('⏳ Performing batch database updates...', 'loading', false);
 
-    // With a branch selected, only architects who have claims in that branch
-    // are updated. Eligibility is per architect, so all of their rows change.
+    // Only architects in the open tab are updated (Active = eligible, Blocked =
+    // blocked). With a branch selected, only architects who have claims in
+    // that branch are updated. Eligibility is per architect, so all of their
+    // rows change.
     const selectedBranch = filters.branch;
+    const tabArchitectsList = architectsList.filter(row => (accountTab === 'blocked') === !row.isEligible);
     const targetArchitects = selectedBranch
-      ? architectsList.filter(row => (row.branches || []).some(branch => branch.toLowerCase() === selectedBranch.toLowerCase()))
-      : architectsList;
+      ? tabArchitectsList.filter(row => (row.branches || []).some(branch => branch.toLowerCase() === selectedBranch.toLowerCase()))
+      : tabArchitectsList;
 
-    const updatedMap = selectedBranch ? { ...eligibilityMap } : {};
+    const updatedMap = { ...eligibilityMap };
     const globalNamesArray = [];
 
     targetArchitects.forEach((row) => {
@@ -965,13 +972,13 @@ const ArchitectAccounts = () => {
         traceActionTag, 
         selectedBranch
           ? `${operatorName} set ${targetArchitects.length} unique codes in branch '${selectedBranch}' to ${stringLabel} via unified text prefix mapping.`
-          : `${operatorName} set all profiles (${architectsList.length} unique codes) to ${stringLabel} via unified text prefix mapping.`
+          : `${operatorName} set ${targetArchitects.length} ${accountTab} unique codes to ${stringLabel} via unified text prefix mapping.`
       );
       await fetchLedgerData();
       showToast(
         selectedBranch
           ? `✅ ${targetArchitects.length} architects of ${selectedBranch} marked ${stringLabel}!`
-          : `✅ Mass assigned all matching records to ${stringLabel}!`,
+          : `✅ ${targetArchitects.length} ${accountTab} architects marked ${stringLabel}!`,
         'success'
       );
     } catch (err) {
@@ -1178,6 +1185,9 @@ const ArchitectAccounts = () => {
     balanceDue: 0,
     totalSheets: 0,
   });
+
+  // KPIs above stay across both tabs; the table shows only the open tab.
+  const tabArchitects = filteredArchitects.filter(row => (accountTab === 'blocked') === !row.isEligible);
 
   const uniqueBranches = [...new Set(architectsList.flatMap(item => item.branches || []))].sort();
 
@@ -1882,40 +1892,49 @@ const ArchitectAccounts = () => {
       </div>
 
       {/* ── RESPONSIVE COMPACT KPI COUNTERS ── */}
-      <div className="kpi-row" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '10px', marginBottom: '20px', maxWidth: '100%' }}>
-        <div className="kpi" style={{ border: '1px solid #e5e7eb', padding: '12px 14px', borderRadius: '6px', background: '#fff' }}>
+      <div className="kpi-row" style={{ display: 'flex', flexWrap: 'wrap', gap: '10px', marginBottom: '20px', maxWidth: '100%' }}>
+        <div className="kpi" style={{ flex: '1 1 110px', minWidth: 0, border: '1px solid #e5e7eb', padding: '12px 14px', borderRadius: '6px', background: '#fff' }}>
           <div className="kpi-lbl" style={{ fontSize: '11px', color: '#6b7280', textTransform: 'uppercase', fontWeight: 500 }}>Unique Architects Listed</div>
           <div className="kpi-val" style={{ fontSize: '18px', fontWeight: 700, margin: '4px 0', color: '#111827' }}>{kpi.totalArchitects}</div>
         </div>
 
-        <div className="kpi" style={{ border: '1px solid #a8dcc0', padding: '12px 14px', borderRadius: '6px', background: '#f0fdf4' }}>
+        <div className="kpi" style={{ flex: '1 1 110px', minWidth: 0, border: '1px solid #a8dcc0', padding: '12px 14px', borderRadius: '6px', background: '#f0fdf4' }}>
           <div className="kpi-lbl" style={{ fontSize: '11px', color: '#166534', textTransform: 'uppercase', fontWeight: 500 }}>✅ Eligible</div>
           <div className="kpi-val" style={{ fontSize: '18px', fontWeight: 700, color: '#16a34a', margin: '4px 0' }}>{kpi.eligible}</div>
         </div>
 
-        <div className="kpi" style={{ border: '1px solid #e8b0b0', padding: '12px 14px', borderRadius: '6px', background: '#fef2f2' }}>
+        <div className="kpi" style={{ flex: '0.7 1 90px', minWidth: 0, border: '1px solid #e8b0b0', padding: '12px 14px', borderRadius: '6px', background: '#fef2f2' }}>
           <div className="kpi-lbl" style={{ fontSize: '11px', color: '#991b1b', textTransform: 'uppercase', fontWeight: 500 }}>❌ Not Eligible</div>
           <div className="kpi-val" style={{ fontSize: '18px', fontWeight:'700', color: '#dc2626', margin: '4px 0' }}>{kpi.notEligible}</div>
         </div>
 
-        <div className="kpi" style={{ border: '1px solid #e5e7eb', padding: '12px 14px', borderRadius: '6px', background: '#fff' }}>
+        <div className="kpi" style={{ flex: '1 1 110px', minWidth: 0, border: '1px solid #e5e7eb', padding: '12px 14px', borderRadius: '6px', background: '#fff' }}>
           <div className="kpi-lbl" style={{ fontSize: '11px', color: '#6b7280', textTransform: 'uppercase', fontWeight: 500 }}>Total Sheets</div>
           <div className="kpi-val" style={{ fontSize: '18px', fontWeight: 700, color: '#111827', margin: '4px 0' }}>
             {kpi.totalSheets?.toLocaleString('en-IN', { maximumFractionDigits: 1 })}
           </div>
         </div>
 
-        <div className="kpi" style={{ border: '1px solid #e5e7eb', padding: '12px 14px', borderRadius: '6px', background: '#fff' }}>
+        {/* Same formula as the Dashboard card: eligible sheets × ₹2,500 per sheet.
+            Wider than the other cards so the full rupee amount fits on one line. */}
+        <div className="kpi" style={{ flex: '1.6 1 170px', border: '1px solid #e5e7eb', padding: '12px 14px', borderRadius: '6px', background: '#fff' }}>
+          <div className="kpi-lbl" style={{ fontSize: '11px', color: '#6b7280', textTransform: 'uppercase', fontWeight: 500 }}>Estimated Business Done</div>
+          <div className="kpi-val" style={{ fontSize: '18px', fontWeight: 700, color: '#111827', margin: '4px 0', whiteSpace: 'nowrap' }}>
+            ₹{Math.round((kpi.totalSheets || 0) * 2500).toLocaleString('en-IN')}
+          </div>
+        </div>
+
+        <div className="kpi" style={{ flex: '1 1 170px', minWidth: 0, border: '1px solid #e5e7eb', padding: '12px 14px', borderRadius: '6px', background: '#fff' }}>
           <div className="kpi-lbl" style={{ fontSize: '11px', color: '#6b7280', textTransform: 'uppercase', fontWeight: 500 }}>Commission Pool</div>
           <div className="kpi-val" style={{ fontSize: '18px', fontWeight: 700, color: '#059669', margin: '4px 0' }}>₹{kpi.commissionPool.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</div>
         </div>
 
-        <div className="kpi" style={{ border: '1px solid #e5e7eb', padding: '12px 14px', borderRadius: '6px', background: '#fff' }}>
+        <div className="kpi" style={{ flex: '1 1 110px', minWidth: 0, border: '1px solid #e5e7eb', padding: '12px 14px', borderRadius: '6px', background: '#fff' }}>
           <div className="kpi-lbl" style={{ fontSize: '11px', color: '#6b7280', textTransform: 'uppercase', fontWeight: 500 }}>Total Paid</div>
           <div className="kpi-val" style={{ fontSize: '18px', fontWeight: 700, color: '#2563eb', margin: '4px 0' }}>₹{kpi.totalCredited.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</div>
         </div>
 
-        <div className="kpi" style={{ border: '1px solid #fca5a5', padding: '12px 14px', borderRadius: '6px', background: '#fff5f5' }}>
+        <div className="kpi" style={{ flex: '0 1 150px', minWidth: 0, border: '1px solid #fca5a5', padding: '12px 14px', borderRadius: '6px', background: '#fff5f5' }}>
           <div className="kpi-lbl" style={{ fontSize: '11px', color: '#b91c1c', textTransform: 'uppercase', fontWeight: 'bold' }}>Balance Due</div>
           <div className="kpi-val" style={{ fontSize: '18px', fontWeight: 700, color: '#b91c1c', margin: '4px 0' }}>₹{kpi.balanceDue.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</div>
         </div>
@@ -1930,11 +1949,15 @@ const ArchitectAccounts = () => {
           </div>
           <div style={{ display: 'flex', gap: '8px' }}>
             <button className="btn btn-gold" onClick={() => triggerBulkConfirmationModal('yes')} style={{ fontSize: '12px', background: '#d97706', color: '#fff', border: 'none', padding: '6px 12px', borderRadius: '4px', cursor: 'pointer', fontWeight: 500 }}>
-               ✅ {filters.branch ? `${filters.branch} All Eligible` : 'Database All Eligible'}
+               ✅ {accountTab === 'blocked'
+                 ? (filters.branch ? `${filters.branch} Blocked → All Eligible` : 'Blocked → All Eligible')
+                 : (filters.branch ? `${filters.branch} All Eligible` : 'Database All Eligible')}
             </button>
-            <button className="btn btn-red" onClick={() => triggerBulkConfirmationModal('no')} style={{ fontSize: '12px', background: '#dc2626', color: '#fff', border: 'none', padding: '6px 12px', borderRadius: '4px', cursor: 'pointer', fontWeight: 500 }}>
-              ❌ {filters.branch ? `${filters.branch} All Ineligible` : 'Database All Ineligible'}
-            </button>
+            {accountTab === 'active' && (
+              <button className="btn btn-red" onClick={() => triggerBulkConfirmationModal('no')} style={{ fontSize: '12px', background: '#dc2626', color: '#fff', border: 'none', padding: '6px 12px', borderRadius: '4px', cursor: 'pointer', fontWeight: 500 }}>
+                ❌ {filters.branch ? `${filters.branch} All Ineligible` : 'Database All Ineligible'}
+              </button>
+            )}
           </div>
         </div>
       </div>
@@ -1945,6 +1968,35 @@ const ArchitectAccounts = () => {
           <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
             <div style={{ fontSize: '18px' }}>👛</div>
             <div className="card-title" style={{ fontWeight: 600, fontSize: '14px' }}>Architect Ledger Leaderboard</div>
+            <div style={{ display: 'flex', gap: '4px', padding: '4px', background: '#f1f5f9', borderRadius: '10px', marginLeft: '8px' }}>
+              {[
+                { key: 'active', label: 'Active', count: filteredArchitects.filter(row => row.isEligible).length, badgeBg: '#fef3c7', badgeColor: '#b45309' },
+                { key: 'blocked', label: 'Blocked', count: filteredArchitects.filter(row => !row.isEligible).length, badgeBg: '#fee2e2', badgeColor: '#b91c1c' },
+              ].map(tab => {
+                const isOpen = accountTab === tab.key;
+                return (
+                  <button
+                    key={tab.key}
+                    type="button"
+                    onClick={() => setAccountTab(tab.key)}
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: '6px',
+                      padding: '6px 14px', border: 'none', borderRadius: '7px', cursor: 'pointer',
+                      fontSize: '13px', fontWeight: isOpen ? 600 : 500,
+                      background: isOpen ? '#ffffff' : 'transparent',
+                      color: isOpen ? '#0f172a' : '#64748b',
+                      boxShadow: isOpen ? '0 1px 3px rgba(15,23,42,0.12)' : 'none',
+                      transition: 'all 0.2s ease'
+                    }}
+                  >
+                    {tab.label}
+                    <span style={{ fontSize: '11px', fontWeight: 700, padding: '1px 7px', borderRadius: '999px', background: tab.badgeBg, color: tab.badgeColor }}>
+                      {tab.count}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
           </div>
           
           <div className="card-hd-right" style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
@@ -2053,7 +2105,7 @@ const ArchitectAccounts = () => {
         <div style={{ padding: '0px', maxWidth: '100%', overflowX: 'auto' }}>
           {loading ? (
             <div style={{ padding: '30px', textAlign: 'center', color: '#6b7280', fontSize: '13px' }}>⏳ Fetching records...</div>
-          ) : filteredArchitects.length === 0 ? (
+          ) : tabArchitects.length === 0 ? (
             <div style={{ padding: '30px', textAlign: 'center', color: '#9ca3af', fontSize: '13px' }}>No matches found.</div>
           ) : (
             <table style={{ width: '100%', minWidth: '1200px', borderCollapse: 'collapse', fontSize: '13px', textAlign: 'left', tableLayout: 'fixed' }}>
@@ -2081,7 +2133,7 @@ const ArchitectAccounts = () => {
                 </tr>
               </thead>
               <tbody>
-                {filteredArchitects.map((row, index) => (
+                {tabArchitects.map((row, index) => (
                   <tr 
                     key={row.uniqueKey} 
                     onClick={() => fetchArchitectSummary(row.architect_name)}
