@@ -40,6 +40,8 @@ const ArchitectAccounts = () => {
   // eligibility buttons act only on the open tab, so "All Eligible" on the
   // Active tab never unblocks a blocked architect.
   const [accountTab, setAccountTab] = useState('active');
+  // Ledger rows whose lead moved to another architect in the Lead Master (shown in the Transferred tab).
+  const [transferredOutRows, setTransferredOutRows] = useState([]);
   const [decorativeMasterList, setDecorativeMasterList] = useState([]);
 
   // Conversion Percentage Tab State ('7%' Payout, '10%' Payout)
@@ -271,17 +273,23 @@ const ArchitectAccounts = () => {
   // listing every product sold under that lead (matching the DGO app's lead
   // detail view: Lead #, DGO/mobile, address, region/district/state/pincode,
   // then a Product SKU / Eligible Sheets / Unit Price / Total Payout table).
-  const fetchArchitectSummary = async (architectName) => {
+  // view 'active': the architect's leads, including leads transferred in from
+  // another architect. view 'transferred': leads that moved away to someone else.
+  const fetchArchitectSummary = async (architectName, view = 'active') => {
     setExpandedLeadIds(new Set());
     setDetailsModal({ show: true, loading: true, architectName, summaryData: [] });
 
     try {
-      const { data, error } = await supabase
+      const ledgerColumns = 'claim_no, architect_name, product_sku, total_eligible_sheets, matrix_rate, total_payout_amount, payout_status, lead_id, lead_created_by, lead_created_by_mobile, status_date';
+      // Matched on the account number prefix: the name on a table row can come from
+      // the Lead Master (transferred-in claims), where the spacing may differ from the ledger's.
+      const { data: ledgerByPrefix, error } = await supabase
         .from('commission_ledger')
-        .select('claim_no, product_sku, total_eligible_sheets, matrix_rate, total_payout_amount, payout_status, lead_id, lead_created_by, lead_created_by_mobile, status_date')
-        .eq('architect_name', architectName)
+        .select(ledgerColumns)
+        .like('architect_name', `${extractArchitectId(architectName)}%`)
         .order('claim_no');
       if (error) throw error;
+      const data = (ledgerByPrefix || []).filter(row => extractArchitectId(row.architect_name) === extractArchitectId(architectName));
 
       // Reconversion reasons live in the activity log, tagged with the claim
       // number of the row they created. Page through, as the log can pass the
@@ -315,35 +323,94 @@ const ArchitectAccounts = () => {
         if (!logRows || logRows.length < logPageSize) break;
       }
 
-      const leadIds = [...new Set(
-        (data || []).map(row => String(row.lead_id || '').trim()).filter(Boolean)
-      )];
+      const thisAccountId = extractArchitectId(architectName);
+      const leadColumns = 'lead_id, address, landmark, city, district, state, pincode, linked_architect';
+      const leadKey = (row) => String(row.lead_id || '').trim();
+      const ownLeadIds = [...new Set((data || []).map(leadKey).filter(Boolean))];
 
-      let leadAddressMap = {};
-      const linkedLeadIds = new Set();
-      if (leadIds.length > 0) {
+      // Lead Master rows by lead id; a row that names an architect wins over one that does not.
+      const leadAddressMap = {};
+      const addLeadRows = (rows) => (rows || []).forEach(row => {
+        const key = leadKey(row);
+        const existing = leadAddressMap[key];
+        if (!existing || (!String(existing.linked_architect || '').trim() && String(row.linked_architect || '').trim())) {
+          leadAddressMap[key] = row;
+        }
+      });
+      for (let i = 0; i < ownLeadIds.length; i += 200) {
         const { data: leadRows, error: leadError } = await supabase
           .from('leads_master')
-          .select('lead_id, address, landmark, city, district, state, pincode, linked_architect')
-          .in('lead_id', leadIds);
+          .select(leadColumns)
+          .in('lead_id', ownLeadIds.slice(i, i + 200));
         if (leadError) throw leadError;
-        leadAddressMap = (leadRows || []).reduce((acc, row) => {
-          acc[row.lead_id] = row;
-          return acc;
-        }, {});
-        (leadRows || []).forEach(row => {
-          if (row.linked_architect && String(row.linked_architect).trim()) {
-            linkedLeadIds.add(String(row.lead_id || '').trim());
-          }
-        });
+        addLeadRows(leadRows);
       }
 
-      const grouped = (data || []).reduce((acc, row) => {
+      // Leads the Lead Master now links to this architect, whose claims sit under
+      // another architect on the ledger (transferred in).
+      let ledgerRows = data || [];
+      if (view === 'active') {
+        const { data: linkedLeadRows, error: linkedError } = await supabase
+          .from('leads_master')
+          .select(leadColumns)
+          .like('linked_architect', `${thisAccountId}%`);
+        if (linkedError) throw linkedError;
+        const receivedLeadIds = [...new Set(
+          (linkedLeadRows || [])
+            .filter(row => extractArchitectId(String(row.linked_architect || '').trim()) === thisAccountId)
+            .map(leadKey)
+            .filter(Boolean)
+        )];
+        addLeadRows(linkedLeadRows);
+        for (let i = 0; i < receivedLeadIds.length; i += 200) {
+          const { data: receivedRows, error: receivedError } = await supabase
+            .from('commission_ledger')
+            .select(ledgerColumns)
+            .in('lead_id', receivedLeadIds.slice(i, i + 200))
+            .order('claim_no');
+          if (receivedError) throw receivedError;
+          ledgerRows = ledgerRows.concat(
+            (receivedRows || []).filter(row => extractArchitectId(row.architect_name) !== thisAccountId)
+          );
+        }
+      }
+      const leadIds = [...new Set(ledgerRows.map(leadKey).filter(Boolean))];
+
+      // Transfer date per lead, from the log written by the Lead Master upload.
+      // A failed lookup (or a table not created yet) only hides the date.
+      const transferDateByLeadId = {};
+      if (leadIds.length > 0) {
+        try {
+          for (let i = 0; i < leadIds.length; i += 200) {
+            const { data: transferRows, error: transferError } = await supabase
+              .from('lead_architect_transfers')
+              .select('lead_id, transferred_at')
+              .eq(view === 'active' ? 'to_architect_id' : 'from_architect_id', thisAccountId)
+              .in('lead_id', leadIds.slice(i, i + 200));
+            if (transferError) throw transferError;
+            (transferRows || []).forEach(t => {
+              const key = String(t.lead_id || '').trim();
+              if (!transferDateByLeadId[key] || t.transferred_at > transferDateByLeadId[key]) {
+                transferDateByLeadId[key] = t.transferred_at;
+              }
+            });
+          }
+        } catch (transferLoadError) {
+          console.error('Failed to load lead transfer dates:', transferLoadError.message);
+        }
+      }
+
+      const grouped = ledgerRows.reduce((acc, row) => {
         const sheetsCount = parseFloat(row.total_eligible_sheets || 0);
         if (sheetsCount === 0) return acc;
         // Same rule as the accounts table: a lead no longer linked to an
-        // architect in the Lead Master is not counted.
-        if (!linkedLeadIds.has(String(row.lead_id || '').trim())) return acc;
+        // architect in the Lead Master is not counted. A lead linked to someone
+        // else belongs to that architect now; it only shows here, under the
+        // old architect, in the transferred view.
+        const currentLinked = String((leadAddressMap[String(row.lead_id || '').trim()] || {}).linked_architect || '').trim();
+        if (!currentLinked) return acc;
+        const linkedToThis = extractArchitectId(currentLinked) === thisAccountId;
+        if (view === 'active' ? !linkedToThis : (linkedToThis || extractArchitectId(row.architect_name) !== thisAccountId)) return acc;
 
         const sku = row.product_sku || 'UNKNOWN';
         const leadId = String(row.lead_id || '').trim() || 'UNKNOWN';
@@ -353,6 +420,10 @@ const ArchitectAccounts = () => {
           const addressInfo = leadAddressMap[leadId] || {};
           acc[leadId] = {
             leadId,
+            transferredTo: view === 'transferred' ? getArchitectDisplayName(currentLinked) : '',
+            transferredAt: view === 'transferred' ? transferDateByLeadId[leadId] || '' : '',
+            receivedFrom: [],
+            receivedAt: view === 'active' ? transferDateByLeadId[leadId] || '' : '',
             dgoName: getDgoNameFromLeadCreatedBy(row.lead_created_by),
             dgoMobile: row.lead_created_by_mobile || '',
             address: addressInfo.address || '',
@@ -368,6 +439,10 @@ const ArchitectAccounts = () => {
         }
 
         const lead = acc[leadId];
+        if (extractArchitectId(row.architect_name) !== thisAccountId) {
+          const fromName = getArchitectDisplayName(row.architect_name);
+          if (!lead.receivedFrom.includes(fromName)) lead.receivedFrom.push(fromName);
+        }
         lead.totalSheets += sheetsCount;
         lead.totalPayout += payoutAmount;
 
@@ -715,13 +790,14 @@ const ArchitectAccounts = () => {
       const leadChunkResults = await Promise.all(leadIdChunks.map(chunk =>
         supabase.from('leads_master').select('lead_id, linked_architect').in('lead_id', chunk)
       ));
-      const linkedLeadIds = new Set();
+      // lead_id -> architect the Lead Master links the lead to right now.
+      const linkedArchitectByLeadId = new Map();
       leadChunkResults.forEach(({ data: leadRows, error: leadError }) => {
         if (leadError) throw leadError;
         (leadRows || []).forEach(lead => {
-          if (lead.linked_architect && String(lead.linked_architect).trim()) {
-            linkedLeadIds.add(String(lead.lead_id || '').trim());
-          }
+          const linked = String(lead.linked_architect || '').trim();
+          const key = String(lead.lead_id || '').trim();
+          if (linked && !linkedArchitectByLeadId.has(key)) linkedArchitectByLeadId.set(key, linked);
         });
       });
 
@@ -748,10 +824,26 @@ const ArchitectAccounts = () => {
 
       // Conversion source rows are retained at zero only as an upload safeguard.
       // They must not appear anywhere in account/product UI summaries.
-      setRawLedgerData(ledgerData.filter(row =>
-        Number(row.total_eligible_sheets || row.totalSheets || 0) > 0 &&
-        linkedLeadIds.has(String(row.lead_id || '').trim())
-      ));
+      // A lead now linked to a different architect than the one on the ledger
+      // row was transferred. Its sheets count for the new architect; the old
+      // architect keeps a record in the Transferred tab instead.
+      const keptRows = [];
+      const transferredOut = [];
+      ledgerData.forEach(row => {
+        if (Number(row.total_eligible_sheets || row.totalSheets || 0) <= 0) return;
+        const linked = linkedArchitectByLeadId.get(String(row.lead_id || '').trim());
+        if (!linked) return;
+        const rowArchitectId = extractArchitectId(row.architect_name);
+        if (extractArchitectId(linked) === rowArchitectId) {
+          keptRows.push(row);
+          return;
+        }
+        transferredOut.push({ ...row, transferred_to: linked });
+        // The old architect's mobile stays with the old architect.
+        keptRows.push({ ...row, architect_name: linked, architect_mobile: '', transferred_from: row.architect_name });
+      });
+      setRawLedgerData(keptRows);
+      setTransferredOutRows(transferredOut);
       setRawRemittanceData(remittanceRes.data || []);
     } catch (err) {
       console.error('Error compiling database rows from ledger datasets:', err.message);
@@ -987,7 +1079,7 @@ const ArchitectAccounts = () => {
     }
   };
 
-  const handleExportExcel = () => {
+  const handleExportExcel = async () => {
     if (filteredArchitects.length === 0) {
       showToast('No architects match the active filters to export.', 'error');
       return;
@@ -1081,6 +1173,42 @@ const ArchitectAccounts = () => {
         a['Product SKU'].localeCompare(b['Product SKU']))
       .map(row => ({ ...row, Sheets: Number(row.Sheets.toFixed(1)), Payout: Number(row.Payout.toFixed(1)) }));
 
+    // Site address per lead, from the Lead Master (same source as the summary modal).
+    // If this lookup fails the export still runs, with the Address column left blank.
+    const leadAddressById = {};
+    try {
+      const exportLeadIds = [...new Set(leadProductRows.map(row => row['Lead ID']).filter(id => id && id !== '—'))];
+      for (let i = 0; i < exportLeadIds.length; i += 200) {
+        const { data: leadRows, error: leadError } = await supabase
+          .from('leads_master')
+          .select('lead_id, address, landmark')
+          .in('lead_id', exportLeadIds.slice(i, i + 200));
+        if (leadError) throw leadError;
+        (leadRows || []).forEach(lead => {
+          // Same text the summary modal shows: address (already holds area, city, pincode) plus landmark.
+          leadAddressById[String(lead.lead_id || '').trim()] = [lead.address, lead.landmark]
+            .map(part => String(part || '').trim())
+            .filter(Boolean)
+            .join(', ');
+        });
+      }
+    } catch (addressError) {
+      console.error('Could not load lead addresses for Excel export:', addressError.message);
+    }
+    // Rebuild each row so Address sits right after Lead ID.
+    const leadProductRowsWithAddress = leadProductRows.map(row => ({
+      'Architect Name': row['Architect Name'],
+      'Account Number': row['Account Number'],
+      'Lead ID': row['Lead ID'],
+      Address: leadAddressById[row['Lead ID']] || '',
+      Branch: row.Branch,
+      'Product Category': row['Product Category'],
+      'Product SKU': row['Product SKU'],
+      Sheets: row.Sheets,
+      Payout: row.Payout,
+      'Eligibility Status': row['Eligibility Status'],
+    }));
+
     const productRows = Object.values(productSummary)
       .sort((a, b) => a['Architect Name'].localeCompare(b['Architect Name']) || a['Product SKU'].localeCompare(b['Product SKU']));
 
@@ -1119,14 +1247,14 @@ const ArchitectAccounts = () => {
     XLSX.utils.book_append_sheet(workbook, summarySheet, 'Architect Accounts');
 
     // Two blank rows between architects so each architect's block is easy to see.
-    const leadProductRowsWithGaps = leadProductRows.flatMap((row, index) => {
-      const previous = leadProductRows[index - 1];
+    const leadProductRowsWithGaps = leadProductRowsWithAddress.flatMap((row, index) => {
+      const previous = leadProductRowsWithAddress[index - 1];
       return previous && previous['Account Number'] !== row['Account Number'] ? [{}, {}, row] : [row];
     });
-    const leadProductSheet = XLSX.utils.json_to_sheet(leadProductRowsWithGaps, { header: Object.keys(leadProductRows[0] || {}) });
+    const leadProductSheet = XLSX.utils.json_to_sheet(leadProductRowsWithGaps, { header: Object.keys(leadProductRowsWithAddress[0] || {}) });
     leadProductSheet['!autofilter'] = { ref: leadProductSheet['!ref'] || 'A1' };
     leadProductSheet['!freeze'] = { xSplit: 0, ySplit: 1 };
-    leadProductSheet['!cols'] = [{ wch: 30 }, { wch: 18 }, { wch: 16 }, { wch: 20 }, { wch: 18 }, { wch: 32 }, { wch: 10 }, { wch: 12 }, { wch: 18 }];
+    leadProductSheet['!cols'] = [{ wch: 30 }, { wch: 18 }, { wch: 16 }, { wch: 50 }, { wch: 20 }, { wch: 18 }, { wch: 32 }, { wch: 10 }, { wch: 12 }, { wch: 18 }];
     XLSX.utils.book_append_sheet(workbook, leadProductSheet, 'Lead-wise Products');
     XLSX.writeFile(workbook, `Architect_Accounts_Report_${new Date().toISOString().slice(0, 10)}.xlsx`);
 
@@ -1242,6 +1370,31 @@ const ArchitectAccounts = () => {
 
   // KPIs above stay across both tabs; the table shows only the open tab.
   const tabArchitects = filteredArchitects.filter(row => (accountTab === 'blocked') === !row.isEligible);
+
+  // Architects whose leads moved to another architect. "Removed" when nothing is
+  // left under them in the Active/Blocked lists, otherwise only part moved.
+  const transferredArchitects = (() => {
+    const byArchitect = {};
+    transferredOutRows.forEach((row) => {
+      const architectId = extractArchitectId(row.architect_name);
+      if (!byArchitect[architectId]) {
+        byArchitect[architectId] = { uniqueKey: architectId, architect_id: architectId, architect_name: row.architect_name, sheets: 0, payout: 0, leads: new Set(), destinations: new Set() };
+      }
+      const entry = byArchitect[architectId];
+      entry.sheets += parseFloat(row.total_eligible_sheets || 0);
+      entry.payout += parseFloat(row.total_payout_amount || 0);
+      entry.leads.add(String(row.lead_id || '').trim());
+      entry.destinations.add(getArchitectDisplayName(row.transferred_to));
+    });
+    const remainingIds = new Set(architectsList.map(row => row.architect_id));
+    const searchString = filters.search?.toLowerCase() || '';
+    return Object.values(byArchitect)
+      .map(entry => ({ ...entry, removed: !remainingIds.has(entry.architect_id) }))
+      .filter(entry =>
+        (entry.architect_name || '').toLowerCase().includes(searchString) ||
+        (entry.architect_id || '').toLowerCase().includes(searchString))
+      .sort((a, b) => b.sheets - a.sheets);
+  })();
 
   const uniqueBranches = [...new Set(architectsList.flatMap(item => item.branches || []))].sort();
 
@@ -1417,6 +1570,26 @@ const ArchitectAccounts = () => {
                               <div style={{ display: 'flex', gap: '6px', marginTop: '8px', fontSize: '12.5px', color: '#64748b', maxWidth: '420px' }}>
                                 <span>🏠</span>
                                 <span>{addressLine}</span>
+                              </div>
+                            )}
+                            {/* Lead moved in from another architect in the Lead Master */}
+                            {lead.receivedFrom && lead.receivedFrom.length > 0 && (
+                              <div style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', marginTop: '8px', marginRight: '6px', padding: '4px 10px', borderRadius: '999px', background: '#f0fdf4', border: '1px solid #86efac', color: '#166534', fontSize: '12px', fontWeight: 600 }}>
+                                <span>⇄</span>
+                                <span>
+                                  Transferred from {lead.receivedFrom.join(', ')}
+                                  {lead.receivedAt ? ` on ${new Date(lead.receivedAt).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}` : ''}
+                                </span>
+                              </div>
+                            )}
+                            {/* Lead moved to another architect in the Lead Master */}
+                            {lead.transferredTo && (
+                              <div style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', marginTop: '8px', padding: '4px 10px', borderRadius: '999px', background: '#fff7ed', border: '1px solid #fdba74', color: '#9a3412', fontSize: '12px', fontWeight: 600 }}>
+                                <span>⇄</span>
+                                <span>
+                                  Transferred to {lead.transferredTo}
+                                  {lead.transferredAt ? ` on ${new Date(lead.transferredAt).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}` : ''}
+                                </span>
                               </div>
                             )}
                           </div>
@@ -2001,7 +2174,7 @@ const ArchitectAccounts = () => {
             <div style={{ fontSize: '18px' }}>⚖️</div>
             <div className="card-title" style={{ fontWeight: 600, fontSize: '14px' }}>Scheme Eligibility — Code Prefix Database Control Registry</div>
           </div>
-          <div style={{ display: 'flex', gap: '8px' }}>
+          <div style={{ display: accountTab === 'transferred' ? 'none' : 'flex', gap: '8px' }}>
             <button className="btn btn-gold" onClick={() => triggerBulkConfirmationModal('yes')} style={{ fontSize: '12px', background: '#d97706', color: '#fff', border: 'none', padding: '6px 12px', borderRadius: '4px', cursor: 'pointer', fontWeight: 500 }}>
                ✅ {accountTab === 'blocked'
                  ? (filters.branch ? `${filters.branch} Blocked → All Eligible` : 'Blocked → All Eligible')
@@ -2026,6 +2199,7 @@ const ArchitectAccounts = () => {
               {[
                 { key: 'active', label: 'Active', count: filteredArchitects.filter(row => row.isEligible).length, badgeBg: '#fef3c7', badgeColor: '#b45309' },
                 { key: 'blocked', label: 'Blocked', count: filteredArchitects.filter(row => !row.isEligible).length, badgeBg: '#fee2e2', badgeColor: '#b91c1c' },
+                { key: 'transferred', label: 'Transferred', count: transferredArchitects.length, badgeBg: '#e0e7ff', badgeColor: '#3730a3' },
               ].map(tab => {
                 const isOpen = accountTab === tab.key;
                 return (
@@ -2159,6 +2333,48 @@ const ArchitectAccounts = () => {
         <div style={{ padding: '0px', maxWidth: '100%', overflowX: 'auto' }}>
           {loading ? (
             <div style={{ padding: '30px', textAlign: 'center', color: '#6b7280', fontSize: '13px' }}>⏳ Fetching records...</div>
+          ) : accountTab === 'transferred' ? (
+            transferredArchitects.length === 0 ? (
+              <div style={{ padding: '30px', textAlign: 'center', color: '#9ca3af', fontSize: '13px' }}>No transferred leads found.</div>
+            ) : (
+              <table style={{ width: '100%', minWidth: '1000px', borderCollapse: 'collapse', fontSize: '13px', textAlign: 'left', tableLayout: 'fixed' }}>
+                <thead>
+                  <tr style={{ background: '#f3f4f6', borderBottom: '2px solid #e5e7eb' }}>
+                    <th style={{ padding: '10px 12px', width: '50px', textAlign: 'center' }}>#</th>
+                    <th style={{ padding: '10px 12px', width: '17%' }}>Architect Name</th>
+                    <th style={{ padding: '10px 12px', width: '11%' }}>Account Number</th>
+                    <th style={{ padding: '10px 12px', width: '8%', textAlign: 'right' }}>Leads</th>
+                    <th style={{ padding: '10px 12px', width: '9%', textAlign: 'right' }}>Sheets Moved</th>
+                    <th style={{ padding: '10px 12px', width: '10%', textAlign: 'right' }}>Pool Payout Moved</th>
+                    <th style={{ padding: '10px 12px', width: '15%' }}>Transferred To</th>
+                    <th style={{ padding: '10px 12px' }}>Reason</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {transferredArchitects.map((row, index) => (
+                    <tr
+                      key={row.uniqueKey}
+                      onClick={() => fetchArchitectSummary(row.architect_name, 'transferred')}
+                      style={{ borderBottom: '1px solid #e5e7eb', cursor: 'pointer' }}
+                      className="hover-row"
+                    >
+                      <td style={{ padding: '10px 12px', textAlign: 'center', color: '#4b5563', fontWeight: 600 }}>{index + 1}</td>
+                      <td style={{ padding: '10px 12px', fontWeight: 600, color: '#111827' }}>{getArchitectDisplayName(row.architect_name)}</td>
+                      <td style={{ padding: '10px 12px', color: '#4b5563', fontWeight: 500, fontSize: '12.5px' }}>{row.architect_id}</td>
+                      <td style={{ padding: '10px 12px', textAlign: 'right', color: '#374151' }}>{row.leads.size}</td>
+                      <td style={{ padding: '10px 12px', textAlign: 'right', color: '#374151' }}>{row.sheets.toFixed(1)}</td>
+                      <td style={{ padding: '10px 12px', textAlign: 'right', color: '#374151', whiteSpace: 'nowrap' }}>₹{row.payout.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</td>
+                      <td style={{ padding: '10px 12px', color: '#4b5563', overflowWrap: 'anywhere' }}>{Array.from(row.destinations).join(', ')}</td>
+                      <td style={{ padding: '10px 12px', color: row.removed ? '#b91c1c' : '#92400e', fontSize: '12.5px' }}>
+                        {row.removed
+                          ? `Removed from the list: all sheets (${row.sheets.toFixed(1)}) moved with ${row.leads.size} lead(s) to another architect in the Lead Master.`
+                          : `Still listed: ${row.sheets.toFixed(1)} sheets from ${row.leads.size} lead(s) moved to another architect.`}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )
           ) : tabArchitects.length === 0 ? (
             <div style={{ padding: '30px', textAlign: 'center', color: '#9ca3af', fontSize: '13px' }}>No matches found.</div>
           ) : (

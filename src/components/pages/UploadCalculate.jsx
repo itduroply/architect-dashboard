@@ -457,6 +457,27 @@ const sanitizeString = (str) => {
 
         const dedupedLeads = Array.from(uniqueLeadsMap.values());
 
+        // Remember each lead's current linked_architect so a change can be logged as a transfer after the upsert.
+        // If this read fails the upload still runs; only the transfer log is skipped.
+        const previousArchitectByKey = new Map();
+        let previousArchitectsLoaded = false;
+        try {
+          const uploadLeadIds = [...new Set(dedupedLeads.map(lead => lead.lead_id))];
+          for (let i = 0; i < uploadLeadIds.length; i += 200) {
+            const { data: existingRows, error: existingError } = await supabase
+              .from('leads_master')
+              .select('lead_id, project_name, linked_architect')
+              .in('lead_id', uploadLeadIds.slice(i, i + 200));
+            if (existingError) throw existingError;
+            (existingRows || []).forEach(row => {
+              previousArchitectByKey.set(`${row.lead_id}|${row.project_name}`.toLowerCase(), row.linked_architect);
+            });
+          }
+          previousArchitectsLoaded = true;
+        } catch (previousError) {
+          console.error('Could not read current linked architects; transfer log skipped:', previousError.message);
+        }
+
         // 3. Batch Upsert with Composite onConflict
         const CHUNK_SIZE = 500;
         let processedCount = 0;
@@ -471,6 +492,43 @@ const sanitizeString = (str) => {
           if (error) throw error;
           processedCount += chunk.length;
           setUploadProgress(Math.round((processedCount / dedupedLeads.length) * 100));
+        }
+
+        // Log leads whose linked architect changed in this upload (old architect -> new architect).
+        if (previousArchitectsLoaded) {
+          try {
+            const transferRows = [];
+            dedupedLeads.forEach(lead => {
+              const key = `${lead.lead_id}|${lead.project_name}`.toLowerCase();
+              if (!previousArchitectByKey.has(key)) return;
+              const oldValue = String(previousArchitectByKey.get(key) ?? '').trim();
+              const newValue = String(lead.linked_architect ?? '').trim();
+              const oldId = getArchitectIdFromLinkedArchitect(oldValue);
+              const newId = getArchitectIdFromLinkedArchitect(newValue);
+              // Nothing to log when the lead had no architect before, or the architect is the same.
+              if (!oldId || oldId === newId) return;
+              transferRows.push({
+                lead_id: lead.lead_id,
+                project_name: lead.project_name,
+                from_architect: oldValue,
+                from_architect_id: oldId,
+                to_architect: newValue || null,
+                to_architect_id: newId || null,
+              });
+            });
+            for (let i = 0; i < transferRows.length; i += CHUNK_SIZE) {
+              const { error: transferError } = await supabase
+                .from('lead_architect_transfers')
+                .insert(transferRows.slice(i, i + CHUNK_SIZE));
+              if (transferError) throw transferError;
+            }
+            if (transferRows.length > 0) {
+              showNotification(`${transferRows.length} lead transfer(s) between architects logged.`, 'info');
+            }
+          } catch (transferLogError) {
+            console.error('Lead transfer log failed:', transferLogError.message);
+            showNotification(`Lead Master saved, but the transfer log failed: ${transferLogError.message}`, 'error');
+          }
         }
 
         setLeadFileLoaded(true);
