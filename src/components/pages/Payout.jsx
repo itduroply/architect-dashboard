@@ -208,7 +208,7 @@ export default function PayoutRequestsTable() {
           const name = String(r[cName] ?? '').trim();
           const sale = toNumber(r[cSale]);
           const comm = toNumber(r[cComm]);
-          const hasSno = cSno < 0 || toNumber(r[cSno]) !== null && r[cSno] !== '';
+          const hasSno = cSno < 0 || (toNumber(r[cSno]) !== null && r[cSno] !== '');
           if (!name || norm(name) === 'total' || sale === null || comm === null || !hasSno) continue;
           parsed.push({
             architect_name: name,
