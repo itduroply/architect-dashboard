@@ -10,8 +10,10 @@ import {
   Trash2,
   Calendar,
   Download,
-  FileSpreadsheet
+  FileSpreadsheet,
+  Upload
 } from 'lucide-react';
+import * as XLSX from 'xlsx';
 
 export default function PayoutRequestsTable() {
   const [payouts, setPayouts] = useState([]);
@@ -23,6 +25,13 @@ export default function PayoutRequestsTable() {
   const [dateFilterPreset, setDateFilterPreset] = useState('all'); // 'all', '3months', '6months', '12months', 'custom'
   const [selectedMonth, setSelectedMonth] = useState(''); 
   
+  // Ventura Paid Remittance tab
+  const [venturaRows, setVenturaRows] = useState([]);
+  const [venturaLoading, setVenturaLoading] = useState(false);
+  const [venturaError, setVenturaError] = useState(null);
+  const [venturaUploading, setVenturaUploading] = useState(false);
+  const [venturaMonth, setVenturaMonth] = useState('all'); // 'all' or 'YYYY-MM'
+
   // Selection States for Batch Actions
   const [selectedIds, setSelectedIds] = useState([]);
   const [isBulkMode, setIsBulkMode] = useState(false);
@@ -109,9 +118,149 @@ export default function PayoutRequestsTable() {
     }
   };
 
+  // Ventura paid remittances live in their own table and are loaded only when that tab opens
+  const fetchVenturaRows = async () => {
+    try {
+      setVenturaLoading(true);
+      setVenturaError(null);
+      const { data, error: venturaFetchError } = await supabase
+        .from('ventura_paid_remittances')
+        .select('id, invoice_generated_by, architect_name, product_delivery_date, payment_date, business_contribution, payout_amount, payout_percent')
+        .order('product_delivery_date', { ascending: true })
+        .order('id', { ascending: true });
+      if (venturaFetchError) throw venturaFetchError;
+      setVenturaRows(data || []);
+    } catch (err) {
+      setVenturaError(err.message);
+    } finally {
+      setVenturaLoading(false);
+    }
+  };
+
+  // Excel date cell: serial number or text like "24-Aug-26" -> "YYYY-MM-DD"
+  const toIsoDate = (value) => {
+    if (value === null || value === undefined || value === '') return null;
+    if (typeof value === 'number') {
+      return new Date(Math.round((value - 25569) * 86400000)).toISOString().slice(0, 10);
+    }
+    const text = String(value).trim();
+    const m = text.match(/^(\d{1,2})[-/ ]([A-Za-z]{3})[A-Za-z]*[-/ ](\d{2}|\d{4})$/);
+    if (m) {
+      const months = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+      const mi = months.indexOf(m[2].toLowerCase());
+      if (mi >= 0) {
+        const yr = m[3].length === 2 ? 2000 + Number(m[3]) : Number(m[3]);
+        return `${yr}-${String(mi + 1).padStart(2, '0')}-${String(m[1]).padStart(2, '0')}`;
+      }
+    }
+    const parsed = new Date(text);
+    return isNaN(parsed) ? null : parsed.toISOString().slice(0, 10);
+  };
+
+  const toNumber = (value) => {
+    if (typeof value === 'number') return value;
+    const n = Number(String(value ?? '').replace(/,/g, '').trim());
+    return isNaN(n) ? null : n;
+  };
+
+  // Reads the Ventura annexure ("Incentive Detail") sheet and inserts new lines. Lines whose VCH No already exists are skipped.
+  const handleVenturaUpload = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+
+    try {
+      setVenturaUploading(true);
+      const workbook = XLSX.read(await file.arrayBuffer(), { type: 'array' });
+      const norm = (v) => String(v).toLowerCase().replace(/\s+/g, ' ').trim();
+
+      // Every sheet with a "Particular" header row is a candidate. If some of them are marked "Pending"
+      // (in the tab name or the title line), only those are read; the other tabs are skipped.
+      const candidates = [];
+      for (const sheetName of workbook.SheetNames) {
+        const rows = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { header: 1, raw: true, defval: '' });
+        const idx = rows.findIndex(r => r.some(c => norm(c).startsWith('particular')));
+        if (idx < 0) continue;
+        const titleText = rows.slice(0, idx).flat().map(norm).join(' ');
+        candidates.push({ sheetName, rows, idx, isPending: norm(sheetName).includes('pending') || titleText.includes('pending') });
+      }
+      if (candidates.length === 0) {
+        throw new Error(`Header row not found in any sheet (sheets: ${workbook.SheetNames.join(', ')}). The sheet needs Particular, Sale Value and Commission Amount columns.`);
+      }
+      const pendingSheets = candidates.filter(c => c.isPending);
+      const sheetsToRead = pendingSheets.length > 0 ? pendingSheets : candidates;
+
+      const parsed = [];
+      for (const { sheetName, rows: grid, idx: headerIdx } of sheetsToRead) {
+        const header = grid[headerIdx].map(norm);
+        const col = (pred) => header.findIndex(pred);
+        const cSno = col(h => h.startsWith('s. no') || h === 's.no' || h === 'sno');
+        const cDate = col(h => h === 'date');
+        const cVch = col(h => h.startsWith('vch'));
+        const cName = col(h => h.startsWith('particular'));
+        const cSale = col(h => h.startsWith('sale value'));
+        const cComm = col(h => h.startsWith('commission'));
+        if ([cName, cSale, cComm].some(i => i < 0)) {
+          throw new Error(`Missing column in sheet "${sheetName}". Need Particular, Sale Value (Rs) and Commission Amount (Rs).`);
+        }
+
+        for (const r of grid.slice(headerIdx + 1)) {
+          const name = String(r[cName] ?? '').trim();
+          const sale = toNumber(r[cSale]);
+          const comm = toNumber(r[cComm]);
+          const hasSno = cSno < 0 || toNumber(r[cSno]) !== null && r[cSno] !== '';
+          if (!name || norm(name) === 'total' || sale === null || comm === null || !hasSno) continue;
+          parsed.push({
+            architect_name: name,
+            product_delivery_date: cDate >= 0 ? toIsoDate(r[cDate]) : null,
+            business_contribution: sale,
+            payout_amount: comm,
+            vch_no: cVch >= 0 && r[cVch] !== '' ? String(r[cVch]).trim() : null
+          });
+        }
+      }
+      if (parsed.length === 0) throw new Error('No data rows found in the file.');
+
+      const { data: existing, error: existingError } = await supabase
+        .from('ventura_paid_remittances')
+        .select('vch_no')
+        .not('vch_no', 'is', null);
+      if (existingError) throw existingError;
+      const seen = new Set((existing || []).map(x => x.vch_no));
+
+      const fresh = [];
+      parsed.forEach(p => {
+        if (p.vch_no && seen.has(p.vch_no)) return;
+        if (p.vch_no) seen.add(p.vch_no);
+        fresh.push(p);
+      });
+
+      if (fresh.length > 0) {
+        const { error: insertError } = await supabase.from('ventura_paid_remittances').insert(fresh);
+        if (insertError) throw insertError;
+      }
+
+      const skipped = parsed.length - fresh.length;
+      setSnackbar({
+        show: true,
+        message: `Uploaded ${fresh.length} Ventura lines${skipped ? `, skipped ${skipped} already uploaded` : ''}.`
+      });
+      setTimeout(() => setSnackbar({ show: false, message: '' }), 4000);
+      await fetchVenturaRows();
+    } catch (err) {
+      setWarningModal({ isOpen: true, title: 'Ventura Upload Failed', message: err.message });
+    } finally {
+      setVenturaUploading(false);
+    }
+  };
+
   useEffect(() => {
     fetchPayoutRequests();
   }, []);
+
+  useEffect(() => {
+    if (activeFilter === 'Ventura') fetchVenturaRows();
+  }, [activeFilter]);
 
   useEffect(() => {
     setSelectedIds([]);
@@ -179,6 +328,22 @@ export default function PayoutRequestsTable() {
 
     return true;
   });
+
+  // Month filter works on Product Delivery Date. Months come from the uploaded data, oldest first.
+  const venturaMonthKeys = [...new Set(
+    venturaRows.map(r => (r.product_delivery_date || '').slice(0, 7)).filter(Boolean)
+  )].sort();
+  const venturaMonthLabel = (key) =>
+    new Date(`${key}-01`).toLocaleString('en-US', { month: 'short', year: 'numeric', timeZone: 'UTC' });
+  const venturaVisibleRows = venturaMonth === 'all'
+    ? venturaRows
+    : venturaRows.filter(r => (r.product_delivery_date || '').slice(0, 7) === venturaMonth);
+
+  const venturaTotalContribution = venturaVisibleRows.reduce((sum, r) => sum + (Number(r.business_contribution) || 0), 0);
+  const venturaTotalPayout = venturaVisibleRows.reduce((sum, r) => sum + (Number(r.payout_amount) || 0), 0);
+  const venturaTotalPercent = venturaTotalContribution > 0
+    ? (venturaTotalPayout / venturaTotalContribution) * 100
+    : null;
 
   // KPI Calculations
   const aggregateTransferred = payouts
@@ -875,7 +1040,7 @@ export default function PayoutRequestsTable() {
           </div>
         )}
 
-        {!loading && !error && (
+        {!loading && !error && activeFilter !== 'Ventura' && (
           <section className="quick-metrics">
             {activeFilter !== 'Paid' && (
               <div className="metric-tile">
@@ -922,6 +1087,12 @@ export default function PayoutRequestsTable() {
                 >
                   Paid Remittances
                 </button>
+                <button
+                  className={`filter-tab-btn ${activeFilter === 'Ventura' ? 'active' : ''}`}
+                  onClick={() => setActiveFilter('Ventura')}
+                >
+                  Ventura Paid Remittance
+                </button>
               </div>
 
               {/* Date Filter Controls in Paid Tab */}
@@ -953,7 +1124,7 @@ export default function PayoutRequestsTable() {
               )}
             </div>
 
-            <div className="controls-right-group" style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+            <div className="controls-right-group" style={{ display: activeFilter === 'Ventura' ? 'none' : 'flex', alignItems: 'center', gap: '0.75rem' }}>
               {/* Unified Excel Export Dropdown */}
               <div className="excel-dropdown-wrapper">
                 <FileSpreadsheet size={15} style={{ color: '#fdfaf5', marginLeft: '0.2rem' }} />
@@ -979,7 +1150,106 @@ export default function PayoutRequestsTable() {
           </div>
         )}
 
-        {loading ? (
+        {!loading && !error && activeFilter === 'Ventura' && (
+          <>
+            {venturaError && (
+              <div className="error-toast">
+                <AlertCircle size={18} />
+                <span><strong>Sync Error:</strong> {venturaError}</span>
+              </div>
+            )}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', gap: '1rem', flexWrap: 'wrap' }}>
+              <div className="date-filter-group">
+                <Calendar size={15} style={{ color: '#8a683e' }} />
+                <span style={{ fontSize: '0.78rem', fontWeight: 700, color: '#8c7662', textTransform: 'uppercase' }}>Month:</span>
+                <select
+                  value={venturaMonth}
+                  onChange={(e) => setVenturaMonth(e.target.value)}
+                  className="filter-select-element"
+                >
+                  <option value="all">All Months</option>
+                  {venturaMonthKeys.map(key => (
+                    <option key={key} value={key}>{venturaMonthLabel(key)}</option>
+                  ))}
+                </select>
+              </div>
+              <label
+                className="btn-bulk-execute"
+                style={{ opacity: venturaUploading ? 0.6 : 1, pointerEvents: venturaUploading ? 'none' : 'auto' }}
+              >
+                {venturaUploading ? <Loader2 size={14} className="spin-icon" /> : <Upload size={14} />}
+                {venturaUploading ? 'Uploading...' : 'Upload Ventura Excel'}
+                <input type="file" accept=".xlsx,.xls,.csv" onChange={handleVenturaUpload} style={{ display: 'none' }} />
+              </label>
+            </div>
+            {venturaLoading ? (
+              <div className="status-center">
+                <Loader2 className="spin-icon" size={24} style={{ marginBottom: '0.5rem' }} />
+                <div style={{ fontSize: '0.875rem', fontWeight: 500 }}>Syncing with upstream database...</div>
+              </div>
+            ) : (
+              <div className="table-view-scroller">
+                <table className="clean-ledger-table">
+                  <thead>
+                    <tr>
+                      <th>Invoices Generated By</th>
+                      <th>Architect Name</th>
+                      <th>Product Delivery Date</th>
+                      <th>Payment Date</th>
+                      <th style={{ textAlign: 'right' }}>Business Contribution</th>
+                      <th style={{ textAlign: 'right' }}>Payout Rs</th>
+                      <th style={{ textAlign: 'right' }}>Payout %</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {venturaVisibleRows.length === 0 ? (
+                      <tr>
+                        <td colSpan={7} className="status-center">
+                          No Ventura paid remittance records found.
+                        </td>
+                      </tr>
+                    ) : (
+                      <>
+                        {venturaVisibleRows.map(row => (
+                          <tr key={row.id}>
+                            <td>{row.invoice_generated_by || 'Ventura'}</td>
+                            <td>
+                              <div className="architect-profile">
+                                <User size={15} style={{ opacity: 0.5, color: '#8c7662' }} />
+                                <span>{row.architect_name}</span>
+                              </div>
+                            </td>
+                            <td>{formatDate(row.product_delivery_date)}</td>
+                            <td>{formatDate(row.payment_date)}</td>
+                            <td style={{ textAlign: 'right' }}>{formatAmount(row.business_contribution)}</td>
+                            <td style={{ textAlign: 'right' }}>
+                              <span className="amount-display" style={{ color: '#059669' }}>{formatAmount(row.payout_amount)}</span>
+                            </td>
+                            <td style={{ textAlign: 'right' }}>
+                              {row.payout_percent === null || row.payout_percent === undefined
+                                ? 'N/A'
+                                : `${Number(row.payout_percent).toFixed(1)}%`}
+                            </td>
+                          </tr>
+                        ))}
+                        <tr>
+                          <td colSpan={4} style={{ fontWeight: 800, color: '#2a1a0f' }}>Total</td>
+                          <td style={{ textAlign: 'right', fontWeight: 800, color: '#2a1a0f' }}>{formatAmount(venturaTotalContribution)}</td>
+                          <td style={{ textAlign: 'right', fontWeight: 800, color: '#059669' }}>{formatAmount(venturaTotalPayout)}</td>
+                          <td style={{ textAlign: 'right', fontWeight: 800, color: '#2a1a0f' }}>
+                            {venturaTotalPercent === null ? 'N/A' : `${venturaTotalPercent.toFixed(1)}%`}
+                          </td>
+                        </tr>
+                      </>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </>
+        )}
+
+        {activeFilter === 'Ventura' ? null : loading ? (
           <div className="status-center">
             <Loader2 className="spin-icon" size={24} style={{ marginBottom: '0.5rem' }} />
             <div style={{ fontSize: '0.875rem', fontWeight: 500 }}>Syncing with upstream database...</div>
