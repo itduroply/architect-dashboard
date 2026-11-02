@@ -95,6 +95,8 @@ export default function DashboardPage() {
   const [rawLedgerRows, setRawLedgerRows] = useState(null);
   // Lead IDs that are still linked to an architect in the Lead Master.
   const [linkedLeadIds, setLinkedLeadIds] = useState(new Set());
+  // Ventura paid remittance lines. Shown only as KPI totals here, never as architects.
+  const [venturaRows, setVenturaRows] = useState([]);
   const [architectsList, setArchitectsList] = useState([]);
   const [categoryBusinessData, setCategoryBusinessData] = useState([]);
   const [skuBusinessData, setSkuBusinessData] = useState([]);
@@ -156,6 +158,13 @@ export default function DashboardPage() {
           }
         });
       });
+
+      // Ventura lines are optional: if this table is missing or fails, the Duroply numbers still load.
+      const { data: venturaData, error: venturaError } = await supabase
+        .from('ventura_paid_remittances')
+        .select('product_delivery_date, business_contribution, payout_amount');
+      if (venturaError) console.error('Ventura Fetch Error:', venturaError.message);
+      setVenturaRows(venturaError ? [] : (venturaData || []));
 
       setLinkedLeadIds(linked);
       setRawLedgerRows(ledger);
@@ -417,6 +426,22 @@ export default function DashboardPage() {
 
   const displayedSkuData = skuBusinessData.slice(0, skuLimit);
 
+  // Ventura totals follow the same From/To range, applied to Product Delivery Date.
+  const venturaStart = startDate ? toLocalDate(startDate) : null;
+  const venturaEnd = endDate ? toLocalDate(endDate) : null;
+  const venturaInRange = venturaRows.filter((row) => {
+    if (!venturaStart && !venturaEnd) return true;
+    const deliveryDate = toLocalDate(row.product_delivery_date);
+    if (!deliveryDate) return false;
+    if (venturaStart && deliveryDate < venturaStart) return false;
+    if (venturaEnd && deliveryDate > venturaEnd) return false;
+    return true;
+  });
+  const venturaBusiness = venturaInRange.reduce((sum, r) => sum + (Number(r.business_contribution) || 0), 0);
+  const venturaCommission = venturaInRange.reduce((sum, r) => sum + (Number(r.payout_amount) || 0), 0);
+  const combinedBusiness = kpi.totalBusiness + venturaBusiness;
+  const combinedCommission = kpi.totalCommission + venturaCommission;
+
   return (
     <div className="page active" id="page-dashboard" style={{ background: 'linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%)', minHeight: '100vh', color: '#334155', fontFamily: '"Inter", system-ui, -apple-system, sans-serif', padding: '24px' }}>
       
@@ -527,21 +552,47 @@ export default function DashboardPage() {
             <div style={{ background: '#e0e7ff', padding: '8px', borderRadius: '10px' }}><Layers size={16} color="#6366f1" /></div>
           </div>
           <div className="kpi-val" style={{ fontSize: '18px', fontWeight: '700', color: '#0f172a', marginTop: '10px', letterSpacing: '-0.5px' }}>
-            {loading ? '—' : `₹${kpi.totalBusiness.toLocaleString('en-IN')}`}
+            {loading ? '—' : `₹${combinedBusiness.toLocaleString('en-IN')}`}
           </div>
-          <div className="kpi-note" style={{ fontSize: '12px', color: '#94a3b8', marginTop: '6px' }}>Gross Value Turnover</div>
+          <div className="kpi-note" style={{ fontSize: '12px', color: '#94a3b8', marginTop: '6px' }}>
+            {loading ? 'Gross Value Turnover' : `Duroply ₹${kpi.totalBusiness.toLocaleString('en-IN')} + Ventura ₹${venturaBusiness.toLocaleString('en-IN')}`}
+          </div>
         </div>
 
         {/* Metric 5 */}
         <div className="kpi" style={{ background: '#fff', padding: '20px', borderRadius: '16px', border: '1px solid #e2e8f0', boxShadow: '0 4px 6px -1px rgba(0,0,0,0.02)' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <div className="kpi-lbl" style={{ fontSize: '11px', color: '#64748b', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Total Commission</div>
+            <div className="kpi-lbl" style={{ fontSize: '11px', color: '#64748b', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Duroply Total Commission</div>
             <div style={{ background: '#fef3c7', padding: '8px', borderRadius: '10px' }}><Coins size={16} color="#eab308" /></div>
           </div>
           <div className="kpi-val" style={{ fontSize: '24px', fontWeight: '700', color: '#10b981', marginTop: '10px', letterSpacing: '-0.5px' }}>
             {loading ? '—' : `₹${kpi.totalCommission.toLocaleString('en-IN')}`}
           </div>
           <div className="kpi-note" style={{ fontSize: '12px', color: '#94a3b8', marginTop: '6px' }}>Cumulative Payout Pool</div>
+        </div>
+
+        {/* Metric 5b: Ventura commission */}
+        <div className="kpi" style={{ background: '#fff', padding: '20px', borderRadius: '16px', border: '1px solid #e2e8f0', boxShadow: '0 4px 6px -1px rgba(0,0,0,0.02)' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <div className="kpi-lbl" style={{ fontSize: '11px', color: '#64748b', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Ventura Total Commission</div>
+            <div style={{ background: '#fef3c7', padding: '8px', borderRadius: '10px' }}><Coins size={16} color="#eab308" /></div>
+          </div>
+          <div className="kpi-val" style={{ fontSize: '24px', fontWeight: '700', color: '#10b981', marginTop: '10px', letterSpacing: '-0.5px' }}>
+            {loading ? '—' : `₹${venturaCommission.toLocaleString('en-IN')}`}
+          </div>
+          <div className="kpi-note" style={{ fontSize: '12px', color: '#94a3b8', marginTop: '6px' }}>Ventura Paid Remittance</div>
+        </div>
+
+        {/* Metric 5c: Duroply + Ventura commission */}
+        <div className="kpi" style={{ background: '#fff', padding: '20px', borderRadius: '16px', border: '1px solid #e2e8f0', boxShadow: '0 4px 6px -1px rgba(0,0,0,0.02)' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <div className="kpi-lbl" style={{ fontSize: '11px', color: '#64748b', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Duroply + Ventura Commission</div>
+            <div style={{ background: '#fef3c7', padding: '8px', borderRadius: '10px' }}><Coins size={16} color="#eab308" /></div>
+          </div>
+          <div className="kpi-val" style={{ fontSize: '24px', fontWeight: '700', color: '#10b981', marginTop: '10px', letterSpacing: '-0.5px' }}>
+            {loading ? '—' : `₹${combinedCommission.toLocaleString('en-IN')}`}
+          </div>
+          <div className="kpi-note" style={{ fontSize: '12px', color: '#94a3b8', marginTop: '6px' }}>Combined Payout Pool</div>
         </div>
 
         {/* Metric 6 */}
