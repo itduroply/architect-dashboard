@@ -1527,6 +1527,11 @@ const ArchitectAccounts = () => {
                     .filter(p => /NATURE'?S?[\s_]*SIGNATURE/i.test(p.sku || ''))
                     .reduce((sum, p) => sum + (Number(p.sheets) || 0), 0);
                   const hasNatureSignature = (lead.products || []).some(p => /NATURE'?S?[\s_]*SIGNATURE/i.test(p.sku || ''));
+                  // Pending = Nature's Signature sheets still held as Nature's Signature (not converted),
+                  // shown against the badge total above.
+                  const nsPendingSheets = (lead.products || [])
+                    .filter(p => !p.isConverted && /NATURE'?S?[\s_]*SIGNATURE/i.test(p.sku || ''))
+                    .reduce((sum, p) => sum + (Number(p.sheets) || 0), 0);
 
                   return (
                     <div key={lead.leadId} style={{ marginBottom: '18px', border: '1px solid #e2e8f0', borderRadius: '12px', overflow: 'hidden', background: '#ffffff' }}>
@@ -1554,6 +1559,18 @@ const ArchitectAccounts = () => {
                                 </span>
                               )}
                             </div>
+
+                            {/* Nature's Signature sheets still pending out of the total above */}
+                            {hasNatureSignature && (
+                              <div style={{ marginTop: '8px' }}>
+                                <span
+                                  title="Nature's Signature sheets not yet converted to another SKU"
+                                  style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', background: '#fffbeb', border: '1px solid #fcd34d', color: '#b45309', borderRadius: '8px', padding: '3px 10px', fontSize: '11.5px', fontWeight: 700 }}
+                                >
+                                  ⏳ Pending Sheet: {Number(nsPendingSheets.toFixed(1))}
+                                </span>
+                              </div>
+                            )}
 
                             {/* DGO name + mobile for the lead */}
                             <div style={{ display: 'flex', gap: '16px', marginTop: '6px', flexWrap: 'wrap' }}>
